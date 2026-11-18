@@ -1,0 +1,28 @@
+[
+  {
+    "StopUID": "TPE40830",
+    "StopID": "40830",
+    "StopName": {"Zh_tw": "捷運萬芳醫院站", "En": "MRT Wanfang Hospital Sta."},
+    "RouteUID": "TPE11023",
+    "RouteID": "11023",
+    "RouteName": {"Zh_tw": "298", "En": "298"},
+    "Direction": 0,
+    "EstimateTime": 4535,
+    "StopStatus": 1,
+    "SrcUpdateTime": "2026-11-17T19:41:55+08:00",
+    "UpdateTime": "2026-11-17T19:42:05+08:00"
+  },
+  {
+    "StopUID": "TPE40828",
+    "StopID": "40828",
+    "StopName": {"Zh_tw": "文山運動中心(興隆)", "En": "Wenshan Sports Center (Xinglong)"},
+    "RouteUID": "TPE11023",
+    "RouteID": "11023",
+    "RouteName": {"Zh_tw": "298", "En": "298"},
+    "Direction": 0,
+    "EstimateTime": 4390,
+    "StopStatus": 1,
+    "SrcUpdateTime": "2026-11-17T19:41:55+08:00",
+    "UpdateTime": "2026-11-17T19:42:05+08:00"
+  }
+]

@@ -1,0 +1,15 @@
+name: planaware_analytics
+version: '1.0.0'
+config-version: 2
+profile: planaware_analytics
+flags:
+  send_anonymous_usage_stats: false
+require-dbt-version: ['>=1.12.7', '<1.13.0']
+model-paths: [models]
+test-paths: [tests]
+target-path: "{{ env_var('DBT_TARGET_PATH', 'target') }}"
+vars:
+  n1_freshness_seconds: 120
+models:
+  planaware_analytics:
+    +materialized: view

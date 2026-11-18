@@ -1,0 +1,40 @@
+version: 2
+sources:
+  - name: operational
+    schema: "{{ env_var('DBT_SOURCE_SCHEMA', 'public') }}"
+    tables:
+      - name: source_observations
+      - name: ingestion_runs
+      - name: impact_assessments
+models:
+  - name: int_n1_observation_quality
+    description: One row per historical observation; candidate quality at retrieval, not vehicle/service availability.
+    columns:
+      - name: observation_id
+        data_tests: [not_null, unique]
+      - name: quality_category
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [incomplete_run, missing_status, unsupported_status, non_normal_status, invalid_raw_eta, missing_eta, raw_normalized_mismatch, missing_source_time, source_after_retrieval, ingestion_before_retrieval, stale_at_retrieval, normal_eta_candidate]
+  - name: mart_transfer_assessments
+    description: Saved assessment history and nullable calculated values; source-backed is not a verified transit outcome.
+    columns:
+      - name: assessment_id
+        data_tests: [not_null, unique]
+      - name: assessment_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [on_track, at_risk, missed_deadline, insufficient_evidence]
+      - name: engine_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [connection_feasible, connection_at_risk, insufficient_evidence]
+      - name: assessment_scenario
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [synthetic, source_backed]
