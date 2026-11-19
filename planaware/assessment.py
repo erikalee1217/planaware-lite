@@ -262,25 +262,7 @@ def build_assessment(spec, context):
 
 def persist_assessment(record, execute_sql):
     expected = canonical_json(record)
-    key = _literal(record['assessment_key'])
-    # Separate statements avoid the concurrent ON CONFLICT/single-CTE visibility
-    # trap at READ COMMITTED. A conflict rolls back and never changes saved rows.
-    sql = f"""BEGIN ISOLATION LEVEL READ COMMITTED;
-        INSERT INTO impact_assessments (journey_id,assessment_key,status,reason_code,
-            model_version,reference_data_version,assumption_version,input_snapshot,
-            evidence_observation_id,evaluated_at,target_transfer_id,target_leg_id)
-        SELECT journey_id,assessment_key,status,reason_code,model_version,
-            reference_data_version,assumption_version,input_snapshot,evidence_observation_id,
-            evaluated_at,target_transfer_id,target_leg_id
-        FROM jsonb_populate_record(NULL::impact_assessments,{_literal(expected)}::jsonb)
-        ON CONFLICT (assessment_key) DO NOTHING;
-        SELECT assessment_id / CASE WHEN (to_jsonb(a)-'assessment_id') =
-            ((SELECT to_jsonb(e) FROM jsonb_populate_record(NULL::impact_assessments,
-              {_literal(expected)}::jsonb) e)-'assessment_id') THEN 1 ELSE 0 END
-        FROM impact_assessments a WHERE assessment_key={key};
-        COMMIT;"""
-    # Division by zero intentionally aborts the transaction on a conflicting key.
-    # No dollar-quoted block embeds source JSON or allows delimiters to escape it.
+    sql = f'SELECT public.persist_impact_assessment({_literal(expected)}::jsonb);'
     try:
         result = execute_sql(sql)
     except AssessmentError:

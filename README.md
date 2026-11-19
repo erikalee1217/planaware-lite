@@ -96,6 +96,7 @@ createdb planaware_demo
 psql -X -v ON_ERROR_STOP=1 -d planaware_demo -f sql/migrations/001_schema.sql
 psql -X -v ON_ERROR_STOP=1 -d planaware_demo -f sql/migrations/002_snapshot_write.sql
 psql -X -v ON_ERROR_STOP=1 -d planaware_demo -f sql/migrations/003_journey_timing_scenarios.sql
+psql -X -v ON_ERROR_STOP=1 -d planaware_demo -f sql/migrations/004_assessment_write.sql
 psql -X -v ON_ERROR_STOP=1 -d planaware_demo -f sql/seeds/001_synthetic_journey.sql
 ~~~
 
