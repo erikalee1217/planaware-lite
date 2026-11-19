@@ -190,7 +190,7 @@ variable controls retrieval-time quality; it does not establish current usabilit
   The default 120-second evidence freshness threshold is configurable and
   illustrative.
 - `postgres:14` is a mutable image tag, and `analytics/requirements.txt` pins
-  direct dependencies only. The local PostgreSQL test backend uses
-  `/private/tmp` and has been verified on macOS.
+  direct dependencies only. The local PostgreSQL test backend has
+  been verified on macOS.
 - Historical fixture provenance is documented in
   [tests/fixtures/README.md](tests/fixtures/README.md).

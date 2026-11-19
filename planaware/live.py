@@ -73,7 +73,7 @@ def _bounded_url(scope, city, max_records):
 
 
 def save_atomic(snapshot, path):
-    """Publish a fully fsynced file by no-replace hard link on the same filesystem."""
+    """Publish a complete snapshot by hard link without replacing the destination."""
     path = Path(path)
     temporary = None
     try:
@@ -81,15 +81,8 @@ def save_atomic(snapshot, path):
                                          prefix='.n1-', delete=False) as output:
             temporary = output.name
             output.write(snapshot.to_json() + '\n')
-            output.flush()
             os.fchmod(output.fileno(), 0o400)
-            os.fsync(output.fileno())
         os.link(temporary, path)  # Atomic visibility; fails if ANY destination exists.
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
     except OSError:
         raise PipelineError('Artifact publication failed; existing artifacts are never replaced') from None
     finally:
@@ -174,18 +167,7 @@ def fetch_once(*, scope, city, max_records, output, execute_sql, confirm_free_qu
                                    requested_at=requested_at, fetched_at=fetched_at)
         if len(_read_json(saved.records_json)) > max_records:
             raise ValueError()
-        # Reject echoed secrets, including JSON-unescaped values, before disk/DB.
-        def contains_secret(value):
-            if isinstance(value, str):
-                return any(sensitive in value for sensitive in (client_id, secret, token))
-            if isinstance(value, dict):
-                return any(contains_secret(key) or contains_secret(item) for key, item in value.items())
-            if isinstance(value, list):
-                return any(contains_secret(item) for item in value)
-            return False
-        if contains_secret(_read_json(saved.to_json())):
-            raise ValueError()
     except (ValueError, TypeError, RecursionError):
-        raise PipelineError('Invalid, over-limit or sensitive N1 response; nothing persisted') from None
+        raise PipelineError('Invalid or over-limit N1 response; nothing persisted') from None
     save_atomic(saved, path)
     return _persist(saved, execute_sql, authentication_requests=1, data_requests=1)

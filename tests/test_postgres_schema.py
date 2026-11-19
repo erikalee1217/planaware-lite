@@ -44,7 +44,8 @@ class DisposablePostgres:
         work.mkdir(exist_ok=True)
         self.cluster_tmp = tempfile.TemporaryDirectory(prefix="postgres-test-", dir=work)
         # Unix socket paths have a small OS length limit; keep this path short.
-        self.socket_tmp = tempfile.TemporaryDirectory(prefix="pa-pg-", dir="/private/tmp")
+        socket_root = "/tmp" if Path("/tmp").is_dir() else tempfile.gettempdir()
+        self.socket_tmp = tempfile.TemporaryDirectory(prefix="pa-pg-", dir=socket_root)
         self.data = Path(self.cluster_tmp.name) / "data"
         self.started = False
 

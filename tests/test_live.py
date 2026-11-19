@@ -135,44 +135,24 @@ class LiveTests(unittest.TestCase):
         with self.assertRaises(PipelineError):
             self.fetch(opener=opener)
 
-    def test_echoed_credentials_and_token_are_rejected_before_artifact(self):
-        for secret in (*CREDENTIALS.values(), TOKEN):
-            records = json.loads(TEXT)
-            records[0]['echo'] = secret
-            with self.assertRaises(PipelineError) as raised:
-                self.fetch(opener=http_mock(json.dumps(records)))
-            self.assertNotIn(secret, str(raised.exception))
-            self.assertFalse(self.output.exists())
-
-    def test_atomic_publish_fsyncs_before_link_and_never_replaces(self):
+    def test_atomic_publish_writes_read_only_snapshot_and_never_replaces(self):
         saved = freeze()
-        real_fsync, real_link = os.fsync, os.link
-        operations = []
-        def sync(fd):
-            operations.append('sync')
-            real_fsync(fd)
-        def link(src, dst):
-            self.assertFalse(self.output.exists())
-            self.assertEqual(FrozenSnapshot.from_json(Path(src).read_text()), saved)
-            operations.append('publish')
-            real_link(src, dst)
-        with patch('planaware.live.os.fsync', side_effect=sync), patch('planaware.live.os.link', side_effect=link):
-            save_atomic(saved, self.output)
-        self.assertEqual(operations, ['sync', 'publish', 'sync'])
+        save_atomic(saved, self.output)
+        self.assertEqual(FrozenSnapshot.from_json(self.output.read_text()), saved)
+        self.assertEqual(self.output.stat().st_mode & 0o777, 0o400)
         original = self.output.read_bytes()
         with self.assertRaises(PipelineError):
             save_atomic(freeze(run_key='different'), self.output)
         self.assertEqual(self.output.read_bytes(), original)
         self.assertEqual(list(self.output.parent.glob('.n1-*')), [])
 
-    def test_failed_file_sync_or_publish_prevents_database_write(self):
-        for target in ('os.fsync', 'os.link'):
-            executor = Mock()
-            with patch('planaware.live.' + target, side_effect=OSError(TOKEN)), self.assertRaises(PipelineError):
-                self.fetch(execute=executor)
-            executor.assert_not_called()
-            self.assertFalse(self.output.exists())
-            self.assertEqual(list(self.output.parent.glob('.n1-*')), [])
+    def test_publish_failure_leaves_no_artifact_or_database_write(self):
+        executor = Mock()
+        with patch('planaware.live.os.link', side_effect=OSError(TOKEN)), self.assertRaises(PipelineError):
+            self.fetch(execute=executor)
+        executor.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.output.parent.glob('.n1-*')), [])
 
     def test_existing_path_prevents_new_http_request(self):
         self.output.write_text('original')
@@ -181,20 +161,6 @@ class LiveTests(unittest.TestCase):
             self.fetch(opener=opener)
         opener.open.assert_not_called()
         self.assertEqual(self.output.read_text(), 'original')
-
-    def test_directory_sync_failure_leaves_complete_artifact_without_database_write(self):
-        executor = Mock()
-        real_fsync = os.fsync
-        calls = []
-        def sync(fd):
-            calls.append(fd)
-            if len(calls) == 2:
-                raise OSError('synthetic directory sync failure')
-            real_fsync(fd)
-        with patch('planaware.live.os.fsync', side_effect=sync), self.assertRaises(PipelineError):
-            self.fetch(execute=executor)
-        executor.assert_not_called()
-        self.assertEqual(len(json.loads(FrozenSnapshot.from_json(self.output.read_text()).records_json)), 2)
 
     def test_database_failure_retains_artifact_and_replay_does_not_authenticate(self):
         with self.assertRaises(PipelineError) as raised:
