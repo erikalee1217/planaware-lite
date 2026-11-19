@@ -17,6 +17,6 @@ Mutations used for other statuses, missing fields, alternate routes and malforme
 responses are synthetic tests, not additional observed TDX examples. No live
 coverage is claimed for those cases. Only the two historical records above are
 the observed fixture. The offline portfolio demo preserves these records and
-combines them with explicitly synthetic journey timings. Another route, including
-611, requires separate verification of direction, ordered stops, frequency,
-identifiers and ETA coverage before use.
+combines them with explicitly synthetic journey timings.
+Another route requires separate verification of direction, ordered stops,
+frequency, identifiers and ETA coverage before use.

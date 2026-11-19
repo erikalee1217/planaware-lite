@@ -13,4 +13,3 @@ __pycache__/
 /analytics/logs/
 /analytics/dbt_packages/
 /analytics/.user.yml
-/docs/assessment-integration.md

@@ -59,8 +59,9 @@ it does not establish passenger progress or independently expire evidence.
 
 Results are conditional timing assessments, not guaranteed boarding outcomes.
 `deadline_missed` describes the supplied interval relative to the deadline, not
-proof that a passenger actually missed a service. The real N1 verification
-returned service-ended records without ETA; it supplies no usable interval here.
+proof that a passenger actually missed a service.
+The committed N1 fixture contains `StopStatus=1` (not departed) records; it does
+not supply a usable downstream arrival interval here.
 
 The evaluator remains a pure function. `planaware.assessment` implements context
 validation and assessment persistence separately, mapping `connection_feasible`

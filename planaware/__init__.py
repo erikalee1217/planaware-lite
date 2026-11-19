@@ -1,1 +1,1 @@
-"""PlanAware N1 ingestion: offline fixtures, bounded manual fetch and replay."""
+"""PlanAware Lite: N1 snapshot validation/replay, manual fetch, transfer risk assessment and brief rendering."""

@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -298,7 +300,6 @@ def assess_saved_transfer(spec, execute_sql):
 def psql_json_executor(database):
     # Same CLI/libpq approach as ingestion; assessment reads also return JSON,
     # whereas the unchanged ingestion executor deliberately accepts scalar IDs.
-    import re
     if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', database):
         raise AssessmentError('Use a plain database name')
     def execute(sql):
@@ -380,7 +381,7 @@ def main(argv=None):
         raw['observation_ids'] = tuple(raw.get('observation_ids', []))
         print(json.dumps(assess_saved_transfer(AssessmentSpec(**raw), execute)))
     except (ValueError, TypeError, KeyError, OSError):
-        print('Assessment failed: check explicit inputs, saved context and database access.', file=__import__('sys').stderr)
+        print('Assessment failed: check explicit inputs, saved context and database access.', file=sys.stderr)
         return 2
     return 0
 
