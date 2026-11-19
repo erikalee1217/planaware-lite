@@ -1,6 +1,7 @@
--- ALL times, durations and buffers below are SYNTHETIC, not a live itinerary.
+-- Demo journey with synthetic times, durations and buffers.
 -- Identifier provenance: manually verified in prior TDX sampling, 2026-11-17.
--- Intentionally inserts ONE new demo per execution. Apply once to a demo DB.
+-- Each execution inserts one journey. Apply once to a dedicated demo database.
+-- Transfer assumptions apply to the 2026-11-17 demo only.
 BEGIN;
 DO $$
 DECLARE
@@ -12,7 +13,7 @@ DECLARE
     coach_leg BIGINT;
 BEGIN
     INSERT INTO journeys (journey_name, service_date, target_arrival_at)
-    VALUES ('SYNTHETIC DEMO: Taipei to Hsinchu (not a live travel plan)',
+    VALUES ('SYNTHETIC DEMO: Taipei to Hsinchu',
             '2026-11-17', '2026-11-17 17:15:00+08')
     RETURNING journey_id INTO demo;
 
@@ -22,7 +23,7 @@ BEGIN
         reference_details
     ) VALUES (
         demo, 2, 'walking', '2026-11-17 14:06:00+08', '2026-11-17 14:10:00+08',
-        240, 'SYNTHETIC synthetic-assumptions-v2: bus alighting point to MRT access; not measured',
+        240, 'synthetic-assumptions-v2: walk from bus alighting point to MRT access',
         '{"origin_name":"捷運萬芳醫院站公車站牌", "destination_name":"萬芳醫院捷運站",
           "assumption_version":"synthetic-assumptions-v2", "reference_data_version":"demo-reference-v2",
           "valid_from":"2026-11-17", "valid_to":"2026-11-17", "times_basis":"synthetic"}'
@@ -41,7 +42,7 @@ BEGIN
           "reference_data_version":"demo-reference-v2",
           "assumption_version":"synthetic-assumptions-v2",
           "valid_from":"2026-11-17", "valid_to":"2026-11-17",
-          "planned_times_basis":"synthetic demo only; NOT a TDX ETA or timetable"}'
+          "planned_times_basis":"synthetic"}'
     ) RETURNING leg_id INTO bus_leg;
 
     INSERT INTO journey_legs (
@@ -57,7 +58,7 @@ BEGIN
           "reference_data_version":"demo-reference-v2",
           "assumption_version":"synthetic-assumptions-v2",
           "valid_from":"2026-11-17", "valid_to":"2026-11-17",
-          "planned_times_basis":"synthetic; no real-time MRT observations"}'
+          "planned_times_basis":"synthetic"}'
     ) RETURNING leg_id INTO metro_leg;
 
     INSERT INTO journey_legs (
@@ -66,7 +67,7 @@ BEGIN
         reference_details
     ) VALUES (
         demo, 4, 'walking', '2026-11-17 14:42:00+08', '2026-11-17 14:57:00+08',
-        900, 'SYNTHETIC synthetic-assumptions-v2: MRT platform to separate Taipei Bus Station boarding point; not measured',
+        900, 'synthetic-assumptions-v2: walk from MRT platform to Taipei Bus Station boarding point',
         '{"origin_name":"台北車站捷運月台", "destination_name":"臺北轉運站候車點",
           "assumption_version":"synthetic-assumptions-v2", "reference_data_version":"demo-reference-v2",
           "valid_from":"2026-11-17", "valid_to":"2026-11-17", "times_basis":"synthetic"}'
@@ -85,20 +86,20 @@ BEGIN
           "reference_data_version":"demo-reference-v2",
           "assumption_version":"synthetic-assumptions-v2",
           "valid_from":"2026-11-17", "valid_to":"2026-11-17",
-          "planned_times_basis":"synthetic; 15:30 is NOT a verified published departure"}'
+          "planned_times_basis":"synthetic"}'
     ) RETURNING leg_id INTO coach_leg;
 
     INSERT INTO transfer_constraints (
         journey_id, from_leg_id, to_leg_id, min_transfer_minutes, assumption_source
     ) VALUES
         (demo, bus_leg, bus_walk, 0,
-         'SYNTHETIC synthetic-assumptions-v2, valid 2026-11-17 only: no extra allowance before explicit walk'),
+         'synthetic-assumptions-v2: no extra allowance before explicit walk'),
         (demo, bus_walk, metro_leg, 2,
-         'SYNTHETIC synthetic-assumptions-v2, valid 2026-11-17 only: extra access/wait allowance; excludes explicit 4-minute walk'),
+         'synthetic-assumptions-v2: extra access/wait allowance; excludes explicit 4-minute walk'),
         (demo, metro_leg, terminal_walk, 0,
-         'SYNTHETIC synthetic-assumptions-v2, valid 2026-11-17 only: no extra allowance before explicit walk'),
+         'synthetic-assumptions-v2: no extra allowance before explicit walk'),
         (demo, terminal_walk, coach_leg, 5,
-         'SYNTHETIC synthetic-assumptions-v2, valid 2026-11-17 only: additional boarding buffer; excludes explicit 15-minute walk; NOT an operator boarding deadline');
+         'synthetic-assumptions-v2: additional boarding buffer; excludes explicit 15-minute walk');
 END;
 $$;
 -- No ingestion runs, ETA observations or assessments are fabricated by this seed.

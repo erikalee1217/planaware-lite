@@ -5,17 +5,17 @@ from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
 
-from .assessment import STATUS_MAP, _time, psql_json_executor
-from .n1 import _read_json
+from .assessment import STATUS_MAP, AssessmentError, _time, psql_json_executor
+from .n1 import ValidationError, _read_json
 
 EXPLANATIONS = {
-    'within_buffer': 'Conditionally feasible under the saved evidence and assumptions; boarding is not guaranteed.',
-    'deadline_overlap': 'The saved arrival window touches or crosses the latest arrival for boarding; the connection is at risk.',
-    'deadline_missed': 'The saved earliest arrival is at or after the boarding deadline; this does not confirm that the passenger missed the service.',
+    'within_buffer': 'Conditionally feasible based on saved evidence and assumptions (boarding is not guaranteed).',
+    'deadline_overlap': 'The saved arrival window reaches or crosses the boarding deadline. The connection is at risk.',
+    'deadline_missed': 'The earliest saved arrival is at or after the boarding deadline. The actual boarding outcome is unknown.',
     'evidence_missing': 'No usable source evidence was selected for this assessment.',
     'evidence_unusable': 'The saved evidence or timing assumptions do not support a reliable assessment.',
     'evidence_stale': 'The selected source observation was stale under the saved freshness policy.',
-    'missing_arrival_interval': 'A justified arrival interval at the target boarding location is missing.',
+    'missing_arrival_interval': 'The arrival interval at the target boarding location is missing or incomplete.',
     'missing_departure': 'The next scheduled departure is missing.',
     'missing_boarding_buffer': 'The required boarding allowance is missing or cannot be reconciled.',
 }
@@ -115,7 +115,7 @@ def build_brief(row):
                 evidence += 'ETA missing.' if selected['estimate_seconds'] is None else f"source ETA={selected['estimate_seconds']} s (not a downstream arrival interval)."
         else:
             raise BriefError('Unsupported saved scenario provenance')
-        provenance = 'Synthetic journey/timing assumptions.' if references_synthetic else 'Reference assumptions retained; this brief does not verify them.'
+        provenance = 'Synthetic journey/timing assumptions.' if references_synthetic else 'Based on saved reference assumptions.'
         missing = [ISSUES.get(issue, 'Reported evidence issue: ' + issue.replace('_', ' ') + '.')
                    for issue in snapshot['quality_issues']]
         if inputs['earliest_arrival'] is None or inputs['latest_arrival'] is None:
@@ -139,7 +139,7 @@ def build_brief(row):
         elif reason == 'missing_boarding_buffer' or 'unknown_walking_duration' in snapshot['quality_issues']:
             next_check = 'Verify the missing walking or boarding-time assumption.'
         else:
-            next_check = 'Obtain a justified arrival interval at the target boarding location.'
+            next_check = 'Provide an arrival interval for the target boarding location.'
         return {'assessment_id': row['assessment_id'], 'journey_id': row['journey_id'],
             'journey_name': context['journey']['journey_name'], 'transfer_id': row['target_transfer_id'],
             'transfer': _leg_label(origin) + ' → ' + _leg_label(target),
@@ -204,7 +204,10 @@ def main(argv=None):
         else:
             output = '\n\n'.join(format_brief(row) for row in rows)
         print(output)
-    except (ValueError, KeyError, TypeError, OSError):
+    except (BriefError, AssessmentError, ValidationError, OSError) as error:
+        print(f'{type(error).__name__}: {error}', file=sys.stderr)
+        return 2
+    except (ValueError, KeyError, TypeError):
         print('Cannot render brief: provide a complete supported assessment and valid database/file access.', file=sys.stderr)
         return 2
     return 0

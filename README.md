@@ -49,10 +49,9 @@ new work/demo-* directory, including text/JSON briefs and a build summary.
 | Synthetic arrival 15:24–15:26; same assumed deadline | at_risk | -1 min |
 | Historical N1 observation without a justified downstream interval | insufficient_evidence | NULL |
 
-The source-backed case uses the committed historical status-1 (not departed)
-sample, with synthetic acquisition metadata and journey timings. It is not a
-current prediction. Additional synthetic quality cases exercise dbt tests.
-Generated IDs/keys may differ between fresh runs; scenario outcomes remain fixed.
+The source-backed case uses the committed historical `StopStatus=1` (not departed)
+sample with synthetic acquisition metadata and journey timings. Generated IDs and
+keys may differ between runs, while scenario outcomes stay fixed.
 
 ## How It Works
 
@@ -84,9 +83,6 @@ and restores a timing fixture to verify its test:
 ~~~sh
 .venv/bin/python analytics/validate.py
 ~~~
-
-The verified results are 117 operational tests and two dbt models with 11 tests,
-on PostgreSQL 14.17/macOS.
 
 <details>
 <summary>Development usage: local database, assessment JSON and individual CLIs</summary>
@@ -186,14 +182,15 @@ variable controls retrieval-time quality; it does not establish current usabilit
 
 ## Limitations
 
-- Feasible/at-risk demo results use synthetic intervals, not live downstream ETA.
-  Source-backed evidence is not proof that a passenger boarded or missed a service.
-- The system does not plan routes, propagate delays across multiple legs, predict
-  downstream arrival times or continuously monitor transit. There is no Airflow,
-  frontend or LLM. A conditional on_track result is not a boarding guarantee.
-- Freshness thresholds are illustrative. Missing or unusable evidence remains
-  insufficient; briefs do not independently authenticate sources or refresh them.
-- postgres:14 is mutable and dbt pins are not a full transitive lock. The local
-  test backend uses /private/tmp and /bin/sh; other platforms are unverified.
-- Historical fixture provenance is documented [here](tests/fixtures/README.md).
-  Local outputs/, work/, credentials, virtualenvs and dbt artifacts stay outside Git.
+- Scope is limited to single-transfer evaluation from caller-supplied intervals.
+  Route planning, multi-leg delay propagation, ETA prediction, and continuous
+  monitoring are out of scope.
+- Feasible and at-risk demo results use synthetic arrival intervals. An
+  `on_track` result is conditional on the supplied evidence and assumptions.
+  The default 120-second evidence freshness threshold is configurable and
+  illustrative.
+- `postgres:14` is a mutable image tag, and `analytics/requirements.txt` pins
+  direct dependencies only. The local PostgreSQL test backend uses
+  `/private/tmp` and has been verified on macOS.
+- Historical fixture provenance is documented in
+  [tests/fixtures/README.md](tests/fixtures/README.md).

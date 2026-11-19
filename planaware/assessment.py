@@ -12,8 +12,8 @@ import sys
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from .n1 import _json_text, _read_json, _timestamp
-from .risk import TransferInput, evaluate_transfer
+from .n1 import ValidationError, _json_text, _read_json, _timestamp
+from .risk import RiskInputError, TransferInput, evaluate_transfer
 
 STATUS_MAP = {'connection_feasible': 'on_track', 'connection_at_risk': 'at_risk',
               'insufficient_evidence': 'insufficient_evidence'}
@@ -282,12 +282,18 @@ def persist_assessment(record, execute_sql):
     # Division by zero intentionally aborts the transaction on a conflicting key.
     # No dollar-quoted block embeds source JSON or allows delimiters to escape it.
     try:
-        identity = int(execute_sql(sql).strip())
-        if identity <= 0:
-            raise ValueError()
-        return identity
+        result = execute_sql(sql)
+    except AssessmentError:
+        raise
     except Exception:
         raise AssessmentError('Assessment persistence failed or key conflicts; retry identical inputs to resolve the outcome') from None
+    try:
+        identity = int(result.strip())
+    except (AttributeError, TypeError, ValueError):
+        raise AssessmentError('Invalid assessment ID returned by database') from None
+    if identity <= 0:
+        raise AssessmentError('Invalid assessment ID returned by database')
+    return identity
 
 
 def assess_saved_transfer(spec, execute_sql):
@@ -375,13 +381,18 @@ def main(argv=None):
             print(json.dumps(demonstrate(args.journey_id, args.transfer_id, args.real_artifact, execute)))
             return 0
         raw = _read_json(args.input.read_text())
+        if not isinstance(raw, dict):
+            raise AssessmentError('Expected a JSON object')
         for field in ('evaluated_at', 'earliest_arrival', 'latest_arrival'):
             if raw.get(field) is not None:
                 raw[field] = _time(raw[field])
         raw['observation_ids'] = tuple(raw.get('observation_ids', []))
         print(json.dumps(assess_saved_transfer(AssessmentSpec(**raw), execute)))
-    except (ValueError, TypeError, KeyError, OSError):
-        print('Assessment failed: check explicit inputs, saved context and database access.', file=sys.stderr)
+    except (AssessmentError, RiskInputError, ValidationError, OSError) as error:
+        print(f'{type(error).__name__}: {error}', file=sys.stderr)
+        return 2
+    except (ValueError, TypeError, KeyError):
+        print('Invalid assessment input fields', file=sys.stderr)
         return 2
     return 0
 
