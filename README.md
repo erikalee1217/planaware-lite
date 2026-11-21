@@ -16,6 +16,8 @@ transfer from explicit evidence and assumptions; it does not predict the interva
 - Persists deterministic transfer assessments with evidence and version metadata.
 - Produces read-only text/JSON briefs and two dbt analytical views.
 - Provides an offline demo using committed fixtures and an isolated database.
+- Offers a Streamlit pilot for Taipei Bus 212 → walk → THSR at Nangang, with
+  journey drafts, saved assessment history, and optional one-time TDX acquisition.
 
 ~~~text
 N1 snapshot → validation → frozen artifact → PostgreSQL observations
@@ -69,11 +71,13 @@ decisions without recalculating them; dbt describes history without changing ris
 
 ## Development & Testing
 
-The operational application uses Python 3.10+ and psql. Tests use isolated
-PostgreSQL, with all HTTP mocked:
+The CLI uses Python 3.10+ and psql. The optional Streamlit UI uses psycopg.
+Install the UI extra to include the pilot tests. Tests use isolated PostgreSQL
+and mock TDX requests:
 
 ~~~sh
-PG_TEST_BACKEND=docker PG_TEST_IMAGE=postgres:14 python3 -m unittest discover -s tests -v
+PLAN_AWARE_JOURNEY_TEST=docker PG_TEST_BACKEND=docker PG_TEST_IMAGE=postgres:14 \
+  python3 -m unittest discover -s tests -v
 ~~~
 
 For local PostgreSQL binaries instead, run python3 -m unittest discover -s tests -v;
@@ -195,3 +199,71 @@ variable controls retrieval-time quality; it does not establish current usabilit
   been verified on macOS.
 - Historical fixture provenance is documented in
   [tests/fixtures/README.md](tests/fixtures/README.md).
+
+## Pilot journey drafts
+
+Install the optional PostgreSQL adapter with `python -m pip install '.[journey]'`.
+Use `planaware.journeys.JourneyStore` with an explicit host or socket directory
+and a dedicated database named `planaware_pilot` or `planaware_pilot_*`.
+Use a separate database and role for the pilot, with the existing schema already
+applied. The database name is an accidental-target guard. Provisioning and access
+permissions provide the isolation.
+
+The adapter creates, reads, and saves pilot drafts. Saves require the edit token
+from the last read. A material edit to an assessed journey creates a new draft
+and preserves the original journey and assessments. Unknown walk and train
+timings stay NULL. When the boarding allowance is unknown, the draft has no transfer row
+because the existing transfer table requires a value and source. A saved draft
+may need more inputs before assessment.
+
+Use `JourneyStore.assess_journey(spec)` for pilot assessments. It locks the
+journey before reading its context and holds the lock through persistence in
+the same transaction, so it can run alongside `save_journey`. Concurrent
+legacy CLI assessment and draft editing on the same pilot database remain
+unsupported because the CLI does not participate in that locking protocol.
+
+### Local Journey Management UI
+
+Install the UI extra from the repository root and start Streamlit on loopback.
+
+```sh
+python -m pip install '.[ui]'
+python -m streamlit run app.py --server.address 127.0.0.1
+```
+
+Before launching Streamlit, set `PLANAWARE_PILOT_DSN` privately in its launch
+environment. Include an explicit host or socket directory and the dedicated
+pilot database name described above. Provision the role and apply the existing
+schema separately. The UI performs writes only on explicit actions.
+
+Select a saved trip from **Saved journey**, or choose **Create new journey**.
+Enter walking time, a THSR train number and departure time, and the boarding
+buffer. The date applies to both the trip and the train departure. You can
+leave timings blank, or open the advanced section to edit endpoints and source
+notes. **Save journey with assumptions** records inputs for the service date.
+Editing an assessed journey creates a clone.
+
+For an assessment, enter the earliest and latest arrivals at the THSR boarding
+point and an evaluation time, all on the saved service date in Taipei time.
+The arrival window must already include the bus ride and walk. The optional
+advanced source note is shown in the saved brief and assessment history.
+This workflow makes no TDX requests. The **Offline Demo** lets you import and
+inspect a synthetic historical boarding observation without credentials.
+
+### Optional live Bus 212 evidence
+
+Configure `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` in the launch environment and
+use the dedicated pilot database. Its role needs the existing ingestion
+function's run and observation permissions. Open **Live TDX N1 (optional)**,
+confirm TDX access and quota, and select **Fetch live TDX N1 once**. It queries
+only the pilot boarding stop and accepts up to five records. If the query
+exceeds that cap, the response is rejected without another request.
+
+Live frozen snapshots in the Git-ignored `work/live-snapshots/` directory are
+local recovery files. After a failed database write, **Replay saved snapshot**
+uses the original clocks without another TDX request. Manually delete files you
+no longer need for replay without affecting saved PostgreSQL rows.
+
+Keep the app and its artifacts local. The evidence card defaults to fetch time
+or accepts an explicit Taipei evaluation time. The assessment records evidence
+quality without deriving a downstream arrival interval.

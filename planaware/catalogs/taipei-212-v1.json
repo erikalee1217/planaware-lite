@@ -1,0 +1,18 @@
+{
+  "version": "taipei-212-v1",
+  "coverage": "partial_pilot_corridor",
+  "source": "TDX CityBus Taipei static Route, StopOfRoute, and Stop queries",
+  "route": {
+    "route_uid": "TPE10912",
+    "route_id": "10912",
+    "subroute_uid": "TPE10912",
+    "subroute_id": "10912",
+    "name": "212",
+    "direction": 0,
+    "headsign": "青年公園",
+    "stops": [
+      {"stop_uid": "TPE10600", "sequence": 10, "name": "南港展覽館"},
+      {"stop_uid": "TPE10606", "sequence": 13, "name": "南港行政中心（南港車站）"}
+    ]
+  }
+}
