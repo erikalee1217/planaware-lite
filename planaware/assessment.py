@@ -18,6 +18,7 @@ from .risk import RiskInputError, TransferInput, evaluate_transfer
 STATUS_MAP = {'connection_feasible': 'on_track', 'connection_at_risk': 'at_risk',
               'insufficient_evidence': 'insufficient_evidence'}
 MODEL_VERSION = 'single-transfer-integration-v1'
+_DEFAULT_EVIDENCE_FRESHNESS_SECONDS = 120
 
 
 class AssessmentError(ValueError):
@@ -40,7 +41,7 @@ class AssessmentSpec:
     observation_ids: tuple[int, ...] = ()
     evidence_leg_id: int | None = None
     evidence_stop_uid: str | None = None
-    freshness_seconds: int = 120
+    freshness_seconds: int = _DEFAULT_EVIDENCE_FRESHNESS_SECONDS
     service_timezone: str = 'Asia/Taipei'
 
 
@@ -125,15 +126,33 @@ def _evidence(spec, context):
         return 'missing', None, ['missing_observation']
     legs = {leg['leg_id']: leg for leg in context['legs']}
     leg = legs.get(spec.evidence_leg_id)
-    issues = []
-    if not leg or leg['transport_mode'] != 'bus' or spec.evidence_stop_uid not in (
-        leg.get('origin_stop_uid'), leg.get('destination_stop_uid')) or not spec.evidence_stop_uid:
-        issues.append('invalid_evidence_leg_or_stop')
+    invalid_leg = not leg or leg['transport_mode'] != 'bus' or not spec.evidence_stop_uid or (
+        spec.evidence_stop_uid not in (leg.get('origin_stop_uid'), leg.get('destination_stop_uid')))
+    scope = (leg.get('route_uid'), leg.get('direction'), spec.evidence_stop_uid) if leg else None
+    return _inspect_observations(observations, scope=scope, evaluated_at=spec.evaluated_at,
+                                 freshness_seconds=spec.freshness_seconds, invalid_leg=invalid_leg)
+
+
+def inspect_boarding_observation(observation, *, route_uid: str, direction: int, boarding_stop_uid: str,
+                                 evaluated_at: datetime | str | None = None) -> tuple[str, list[str]]:
+    """Return quality and issue codes for one saved observation at the expected boarding stop.
+
+    The default evaluation clock is the saved fetch time.
+    """
+    if evaluated_at is None:
+        evaluated_at = observation['fetched_at']
+    quality, _, issues = _inspect_observations(
+        [observation], scope=(route_uid, direction, boarding_stop_uid), evaluated_at=evaluated_at,
+        freshness_seconds=_DEFAULT_EVIDENCE_FRESHNESS_SECONDS,
+    )
+    return quality, issues
+
+
+def _inspect_observations(observations, *, scope, evaluated_at, freshness_seconds, invalid_leg=False):
+    issues = ['invalid_evidence_leg_or_stop'] if invalid_leg else []
     selected = max(observations, key=lambda row: (_time(row['fetched_at']), row['observation_id']))
     for row in observations:
-        if row['source_system'] != 'tdx_bus_n1' or not leg or (
-            row['route_uid'], row['direction'], row['stop_uid']) != (
-                leg.get('route_uid'), leg.get('direction'), spec.evidence_stop_uid):
+        if row['source_system'] != 'tdx_bus_n1' or (row['route_uid'], row['direction'], row['stop_uid']) != scope:
             issues.append('evidence_scope_mismatch')
         raw = row['raw_payload']
         if type(raw.get('Direction')) is not int or type(raw.get('StopStatus')) is not int or (
@@ -149,7 +168,7 @@ def _evidence(spec, context):
         except (ValueError, TypeError):
             issues.append('invalid_raw_source_time')
     source = _time(selected['source_updated_at'])
-    fetched, evaluated = _time(selected['fetched_at']), _time(spec.evaluated_at)
+    fetched, evaluated = _time(selected['fetched_at']), _time(evaluated_at)
     if source is None:
         issues.append('missing_source_time')
     else:
@@ -167,7 +186,7 @@ def _evidence(spec, context):
         issues.append('missing_or_invalid_estimate')
     if issues:
         return 'unusable', selected['observation_id'], sorted(set(issues))
-    if evaluated - source > timedelta(seconds=spec.freshness_seconds):
+    if evaluated - source > timedelta(seconds=freshness_seconds):
         return 'stale', selected['observation_id'], ['stale_source_time']
     return 'usable', selected['observation_id'], []
 

@@ -157,7 +157,7 @@ class JourneyFormTests(unittest.TestCase):
         self.assertEqual(card["SrcUpdateTime"], "2026-11-20 11:30:00+08:00")
         self.assertEqual(card["fetched_at"], "2026-11-20 11:30:05+08:00")
         self.assertEqual(card["Freshness lag"], "5 s")
-        key = "V0.1 ETA eligibility at fetch time"
+        key = "Boarding evidence quality at fetch time"
         self.assertIn("Rejected", card[key])
         self.assertIn("Source status", card[key])
         normal = dict(observation, stop_status=0, raw_payload=dict(observation["raw_payload"], StopStatus=0))

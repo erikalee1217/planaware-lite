@@ -2,10 +2,9 @@
 
 from datetime import date, datetime, time
 from decimal import Decimal, DecimalException, ROUND_HALF_UP
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from .assessment import AssessmentSpec, _evidence, _time
+from .assessment import AssessmentSpec, _time, inspect_boarding_observation
 from .brief import ISSUES, BriefError, build_brief
 from .catalog import RouteVariant
 from .journeys import BoardingAllowance, Journey, JourneyDraft, JourneyError, TrainDeparture, Walk
@@ -200,23 +199,15 @@ def assessment_history(rows):
 
 
 def observation_summary(observation, route: RouteVariant, *, evaluated_at=None) -> dict[str, str]:
-    """Display V0.1 boarding evidence quality without constructing arrival bounds."""
+    """Display boarding evidence quality without constructing arrival bounds."""
     fetched = _time(observation["fetched_at"])
     source = _time(observation["source_updated_at"])
     evaluation = fetched if evaluated_at is None else _time(evaluated_at)
     updated = _time(observation["raw_payload"].get("UpdateTime"))
-    boarding, alighting = route.stops
-    # The evidence gate only needs a bus leg and a selected observation. This card
-    # can be shown even when the user has not loaded a journey.
-    spec = SimpleNamespace(
-        scenario="source_backed", observation_ids=(observation["observation_id"],),
-        evidence_leg_id=1, evidence_stop_uid=boarding.stop_uid,
-        evaluated_at=evaluation, freshness_seconds=120,  # V0.1 default policy
+    quality, issues = inspect_boarding_observation(
+        observation, route_uid=route.route_uid, direction=route.direction,
+        boarding_stop_uid=route.stops[0].stop_uid, evaluated_at=evaluation,
     )
-    leg = dict(leg_id=1, transport_mode="bus", route_uid=route.route_uid,
-               direction=route.direction, origin_stop_uid=boarding.stop_uid,
-               destination_stop_uid=alighting.stop_uid)
-    quality, _, issues = _evidence(spec, {"observations": [observation], "legs": [leg]})
     status = observation["stop_status"]
     status_label = STATUS_LABELS.get(status, "unknown").replace("_", " ")
     estimate = observation["estimate_seconds"]
@@ -229,7 +220,7 @@ def observation_summary(observation, route: RouteVariant, *, evaluated_at=None) 
         "UpdateTime": updated.astimezone(TAIPEI).isoformat(sep=" ") if updated else "Not reported",
         "fetched_at": fetched.astimezone(TAIPEI).isoformat(sep=" "),
         "Freshness lag": f"{(fetched - source).total_seconds():g} s" if source else "Unknown",
-        "V0.1 ETA eligibility at fetch time" if evaluated_at is None else "V0.1 ETA eligibility at evaluation": (
+        "Boarding evidence quality at fetch time" if evaluated_at is None else "Boarding evidence quality at evaluation": (
             "Eligible as boarding-stop evidence; no downstream interval established." if quality == "usable"
             else f"Rejected ({quality}). " + " ".join(ISSUES.get(issue, issue) for issue in issues)
         ),

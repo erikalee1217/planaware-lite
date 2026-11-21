@@ -1,1 +1,1 @@
-"""PlanAware Lite: N1 snapshot validation/replay, manual fetch, transfer risk assessment and brief rendering."""
+"""N1 acquisition and replay, pilot journey management, transfer risk assessment, and briefs."""

@@ -113,10 +113,10 @@ class LivePilotTests(unittest.TestCase):
         fetched = live_evaluation_time(observation["fetched_at"])
         later = fetched + timedelta(minutes=3)
         self.assertIn("Eligible as boarding-stop evidence", observation_summary(
-            observation, ROUTE, evaluated_at=fetched)["V0.1 ETA eligibility at evaluation"])
+            observation, ROUTE, evaluated_at=fetched)["Boarding evidence quality at evaluation"])
         card = observation_summary(observation, ROUTE, evaluated_at=later)
         self.assertEqual(card["Age at evaluation"], "185 s")
-        self.assertIn("Rejected (stale)", card["V0.1 ETA eligibility at evaluation"])
+        self.assertIn("Rejected (stale)", card["Boarding evidence quality at evaluation"])
         journey = historical_journey()
         self.assertEqual(live_observation_prerequisites(journey, observation["fetched_at"], later), ())
         self.assertIn("reference", live_observation_prerequisites(

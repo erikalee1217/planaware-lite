@@ -6,7 +6,9 @@ from decimal import Decimal
 import json
 import unittest
 
-from planaware.assessment import AssessmentError, AssessmentSpec, build_assessment, canonical_json, _time
+from planaware.assessment import (
+    AssessmentError, AssessmentSpec, _time, build_assessment, canonical_json, inspect_boarding_observation,
+)
 from planaware.risk import RiskInputError
 
 NOW = datetime(2026, 11, 18, 1, 0, tzinfo=timezone.utc)
@@ -118,6 +120,49 @@ class AssessmentUnitTests(unittest.TestCase):
         context['observations'] = [synthetic_observation(source_age=120)]
         self.assertEqual(build_assessment(source_spec(), context)['status'], 'on_track')
         self.assertEqual(build_assessment(source_spec(freshness_seconds=119), context)['reason_code'], 'evidence_stale')
+
+    def test_boarding_inspection_matches_assessment_evidence(self):
+        wrong_route = synthetic_observation()
+        wrong_route['route_uid'] = wrong_route['raw_payload']['RouteUID'] = 'WRONG_ROUTE'
+        wrong_direction = synthetic_observation()
+        wrong_direction['direction'] = wrong_direction['raw_payload']['Direction'] = 0
+        wrong_stop = synthetic_observation()
+        wrong_stop['stop_uid'] = wrong_stop['raw_payload']['StopUID'] = 'SYNTHETIC_DESTINATION'
+        raw_clock_mismatch = synthetic_observation()
+        raw_clock_mismatch['raw_payload']['SrcUpdateTime'] = NOW.isoformat()
+        cases = (
+            ('non-normal status', synthetic_observation(status=1), 'unusable', ['non_normal_stop_status']),
+            ('missing ETA', synthetic_observation(estimate=None), 'unusable', ['missing_or_invalid_estimate']),
+            ('fresh normal ETA', synthetic_observation(), 'usable', []),
+            ('stale', synthetic_observation(source_age=121), 'stale', ['stale_source_time']),
+            ('source after fetch', synthetic_observation(source_age=5), 'unusable', ['future_or_inconsistent_clock']),
+            ('fetch after evaluation', synthetic_observation(fetch_age=-1), 'unusable', ['future_or_inconsistent_clock']),
+            ('raw clock mismatch', raw_clock_mismatch, 'unusable', ['raw_source_time_mismatch']),
+            ('wrong route', wrong_route, 'unusable', ['evidence_scope_mismatch']),
+            ('wrong direction', wrong_direction, 'unusable', ['evidence_scope_mismatch']),
+            ('wrong boarding stop', wrong_stop, 'unusable', ['evidence_scope_mismatch']),
+        )
+        for name, observation, quality, issues in cases:
+            with self.subTest(name=name):
+                context = synthetic_context()
+                context['observations'] = [observation]
+                snapshot = build_assessment(source_spec(), context)['input_snapshot']
+                inspected = inspect_boarding_observation(
+                    observation, route_uid='SYNTHETIC_ROUTE', direction=1,
+                    boarding_stop_uid='SYNTHETIC_STOP', evaluated_at=NOW,
+                )
+                self.assertEqual(inspected, (quality, issues))
+                self.assertEqual(inspected, (
+                    snapshot['engine_input']['evidence_quality'], snapshot['quality_issues'],
+                ))
+
+    def test_boarding_inspection_defaults_to_saved_fetch_time(self):
+        observation = synthetic_observation(source_age=130, fetch_age=10)
+        scope = dict(route_uid='SYNTHETIC_ROUTE', direction=1, boarding_stop_uid='SYNTHETIC_STOP')
+        self.assertEqual(inspect_boarding_observation(observation, **scope), ('usable', []))
+        self.assertEqual(inspect_boarding_observation(
+            observation, **scope, evaluated_at=NOW,
+        ), ('stale', ['stale_source_time']))
 
     def test_latest_unusable_does_not_fall_back_and_delayed_conflicts_are_unusable(self):
         cases = [([synthetic_observation(1, source_age=60, fetch_age=50),

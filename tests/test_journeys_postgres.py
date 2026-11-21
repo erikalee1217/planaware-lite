@@ -21,7 +21,7 @@ from planaware.journeys import JourneyError, JourneyStore, load_synthetic_212_sn
 from planaware.live import PipelineError
 from planaware.live_observations import acquire_live_boarding, list_live_artifacts, replay_live_boarding
 from planaware.n1 import FrozenSnapshot, _read_json, freeze_n1_fixture
-from planaware.ui_helpers import TAIPEI
+from planaware.ui_helpers import TAIPEI, store_error_message
 from test_assessment import synthetic_spec
 from test_journeys import DRAFT, TIMED
 from test_pilot_observations import REPLAY_DRAFT
@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LABEL = "planaware.journey-test"
 
 
-@unittest.skipUnless(os.environ.get("PLAN_AWARE_JOURNEY_TEST") == "docker", "Journey Docker tests are opt-in")
+@unittest.skipUnless(os.environ.get("PLANAWARE_JOURNEY_TEST") == "docker", "Journey Docker tests are opt-in")
 class JourneyPostgresTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -138,6 +138,19 @@ class JourneyPostgresTests(unittest.TestCase):
         self.assertIsNone(saved.legs[1]["estimated_duration_seconds"])
         self.assertIsNone(saved.legs[2]["planned_departure_at"])
         self.assertIsNone(saved.transfer)
+
+    def test_multiple_transfers_are_rejected_with_a_displayable_error(self):
+        saved = self.store.create_draft(TIMED)
+        with self.psycopg.connect(self.dsn) as connection:
+            connection.execute("""
+                INSERT INTO transfer_constraints
+                    (journey_id, from_leg_id, to_leg_id, min_transfer_minutes, assumption_source)
+                VALUES (%s, %s, %s, 0, 'Synthetic second transfer')
+            """, (saved.journey_id, saved.legs[0]["leg_id"], saved.legs[1]["leg_id"]))
+
+        with self.assertRaisesRegex(JourneyError, "^Journey has an unsupported transfer$") as caught:
+            self.store.get_journey(saved.journey_id)
+        self.assertEqual(store_error_message(caught.exception), "Journey has an unsupported transfer")
 
     def test_child_insert_failure_rolls_back_the_aggregate(self):
         with self.psycopg.connect(self.dsn, autocommit=True) as conn:

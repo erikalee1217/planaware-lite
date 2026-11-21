@@ -1,23 +1,21 @@
 # PlanAware Lite
 
-## Overview
+PlanAware Lite evaluates single transfers from explicit evidence and assumptions.
+It offers two workflows:
 
-A delay on the first leg of a journey can affect every connection that follows.
-PlanAware Lite explores this with a reference trip: Bus 298 → Taipei MRT →
-intercity bus 1822 to Hsinchu.
-
-Live TDX data has been ingested successfully, but the demo's feasible/at-risk
-results are based on synthetic arrival intervals. The project evaluates one
-transfer from explicit evidence and assumptions; it does not predict the interval.
+- [Bus 298 offline CLI/dbt demo](#bus-298-offline-clidbt-demo) exercises snapshot
+  replay, saved assessments, briefs, and analytics for a reference trip via Taipei
+  MRT and intercity bus 1822. It replays a historical TDX fixture and uses
+  synthetic timing assumptions.
+- [Bus 212 local Streamlit pilot](#bus-212-local-streamlit-pilot) manages drafts and
+  assessment history for Bus 212 → walk → THSR at Nangang. It supports a
+  synthetic offline snapshot and an optional, user-triggered real TDX fetch.
 
 ## Features & Architecture
 
 - Validates bus snapshots, stores observation history and supports frozen replay.
 - Persists deterministic transfer assessments with evidence and version metadata.
 - Produces read-only text/JSON briefs and two dbt analytical views.
-- Provides an offline demo using committed fixtures and an isolated database.
-- Offers a Streamlit pilot for Taipei Bus 212 → walk → THSR at Nangang, with
-  journey drafts, saved assessment history, and optional one-time TDX acquisition.
 
 ~~~text
 N1 snapshot → validation → frozen artifact → PostgreSQL observations
@@ -25,7 +23,7 @@ Saved journey + explicit interval + evidence → assessment history → brief
 PostgreSQL history → dbt observation-quality and assessment views
 ~~~
 
-## Quick Start
+## Bus 298 offline CLI/dbt demo
 
 Use Python 3.12 (verified), Docker, and an already-installed postgres:14 image.
 Install dependencies once from the repository root:
@@ -76,13 +74,15 @@ Install the UI extra to include the pilot tests. Tests use isolated PostgreSQL
 and mock TDX requests:
 
 ~~~sh
-PLAN_AWARE_JOURNEY_TEST=docker PG_TEST_BACKEND=docker PG_TEST_IMAGE=postgres:14 \
+PLANAWARE_JOURNEY_TEST=docker PG_TEST_BACKEND=docker PG_TEST_IMAGE=postgres:14 \
   python3 -m unittest discover -s tests -v
 ~~~
 
-For local PostgreSQL binaries instead, run python3 -m unittest discover -s tests -v;
-set PG_TEST_BINDIR if needed. Additional analytics validation deliberately breaks
-and restores a timing fixture to verify its test:
+`PLANAWARE_JOURNEY_TEST=docker` enables the isolated journey integration tests.
+`PLANAWARE_PILOT_DSN` configures the running app only. To test with local
+PostgreSQL binaries, run `python3 -m unittest discover -s tests -v` and set
+`PG_TEST_BINDIR` if needed. The journey integration tests use Docker.
+Additional analytics validation deliberately breaks and restores a timing fixture:
 
 ~~~sh
 .venv/bin/python analytics/validate.py
@@ -185,22 +185,7 @@ variable controls retrieval-time quality; it does not establish current usabilit
 
 </details>
 
-## Limitations
-
-- Scope is limited to single-transfer evaluation from caller-supplied intervals.
-  Route planning, multi-leg delay propagation, ETA prediction, and continuous
-  monitoring are out of scope.
-- Feasible and at-risk demo results use synthetic arrival intervals. An
-  `on_track` result is conditional on the supplied evidence and assumptions.
-  The default 120-second evidence freshness threshold is configurable and
-  illustrative.
-- `postgres:14` is a mutable image tag, and `analytics/requirements.txt` pins
-  direct dependencies only. The local PostgreSQL test backend has
-  been verified on macOS.
-- Historical fixture provenance is documented in
-  [tests/fixtures/README.md](tests/fixtures/README.md).
-
-## Pilot journey drafts
+## Bus 212 local Streamlit pilot
 
 Install the optional PostgreSQL adapter with `python -m pip install '.[journey]'`.
 Use `planaware.journeys.JourneyStore` with an explicit host or socket directory
@@ -267,3 +252,18 @@ no longer need for replay without affecting saved PostgreSQL rows.
 Keep the app and its artifacts local. The evidence card defaults to fetch time
 or accepts an explicit Taipei evaluation time. The assessment records evidence
 quality without deriving a downstream arrival interval.
+
+## Limitations
+
+- Scope is limited to single-transfer evaluation from caller-supplied intervals.
+  Route planning, multi-leg delay propagation, ETA prediction, and continuous
+  monitoring are out of scope.
+- Feasible and at-risk demo results use synthetic arrival intervals. An
+  `on_track` result is conditional on the supplied evidence and assumptions.
+  The default 120-second evidence freshness threshold is configurable and
+  illustrative.
+- `postgres:14` is a mutable image tag, and `analytics/requirements.txt` pins
+  direct dependencies only. The local PostgreSQL test backend has
+  been verified on macOS.
+- Historical fixture provenance is documented in
+  [tests/fixtures/README.md](tests/fixtures/README.md).

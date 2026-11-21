@@ -1,4 +1,4 @@
-"""Explicit pilot acquisition and recovery through the V0.1 N1 pipeline."""
+"""Explicit pilot acquisition and recovery through the N1 pipeline."""
 
 from pathlib import Path
 import os
