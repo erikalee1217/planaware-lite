@@ -6,9 +6,9 @@ import re
 from uuid import uuid4
 
 from .catalog import load_catalog
-from .journeys import JourneyStore, _validate_snapshot_scope
+from .journeys import JourneyStore, validate_pilot_snapshot_scope
 from .live import PipelineError, fetch_once
-from .n1 import FrozenSnapshot, N1Scope, _read_json
+from .n1 import FrozenSnapshot, N1Scope, parse_strict_json
 
 
 LIVE_RECORD_LIMIT = 5
@@ -40,9 +40,9 @@ def _read_live_artifact(path: Path) -> FrozenSnapshot:
         if path.is_symlink() or not path.is_file():
             raise ValueError
         snapshot = FrozenSnapshot.from_json(path.read_text(encoding="utf-8"))
-        _validate_snapshot_scope(snapshot)
+        validate_pilot_snapshot_scope(snapshot)
         if not snapshot.run_key.startswith("tdx-n1:") or any(
-            row["raw_payload"].get("synthetic_test_only") is True for row in _read_json(snapshot.records_json)
+            row["raw_payload"].get("synthetic_test_only") is True for row in parse_strict_json(snapshot.records_json)
         ):
             raise ValueError
         return snapshot

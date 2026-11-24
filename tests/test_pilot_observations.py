@@ -6,7 +6,7 @@ from planaware.assessment import build_assessment
 from planaware.journeys import (
     JourneyError, JourneyStore, load_synthetic_212_snapshot, observation_assessment_spec,
 )
-from planaware.n1 import N1Scope, _read_json, freeze_n1_fixture
+from planaware.n1 import N1Scope, freeze_n1_fixture, parse_strict_json
 from test_journey_ui import CONFIRMED, saved_journey
 
 
@@ -21,7 +21,7 @@ class PilotObservationTests(unittest.TestCase):
         snapshot = load_synthetic_212_snapshot()
         self.assertEqual(snapshot.run_key, "synthetic-212-boarding-replay-v1")
         self.assertEqual(snapshot.scope, N1Scope("TPE10912", 0, ("TPE10600",)))
-        row, = _read_json(snapshot.records_json)
+        row, = parse_strict_json(snapshot.records_json)
         self.assertIs(row["raw_payload"]["synthetic_test_only"], True)
         self.assertEqual(row["stop_status"], 1)
         self.assertLessEqual(row["source_updated_at"], row["tdx_updated_at"])
@@ -43,7 +43,7 @@ class PilotObservationTests(unittest.TestCase):
 
     def test_status_one_and_normal_without_bounds_both_yield_insufficient_evidence(self):
         snapshot = load_synthetic_212_snapshot()
-        normalized, = _read_json(snapshot.records_json)
+        normalized, = parse_strict_json(snapshot.records_json)
         journey = saved_journey(REPLAY_DRAFT)
         for status, reason in ((1, "evidence_unusable"), (0, "missing_arrival_interval")):
             with self.subTest(status=status):

@@ -7,7 +7,8 @@ import json
 import unittest
 
 from planaware.assessment import (
-    AssessmentError, AssessmentSpec, _time, build_assessment, canonical_json, inspect_boarding_observation,
+    AssessmentError, AssessmentSpec, build_assessment, canonical_json, inspect_boarding_observation,
+    to_utc_datetime,
 )
 from planaware.risk import RiskInputError
 
@@ -222,4 +223,4 @@ class AssessmentUnitTests(unittest.TestCase):
         record = build_assessment(synthetic_spec(), context)
         self.assertIn('0.12345678901234567890123456789', canonical_json(record))
         with self.assertRaises(ValueError):
-            _time('2026-11-18T01:00:00.1234567Z')  # Reject, never silently truncate.
+            to_utc_datetime('2026-11-18T01:00:00.1234567Z')  # Reject, never silently truncate.

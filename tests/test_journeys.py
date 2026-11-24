@@ -1,6 +1,8 @@
 from dataclasses import replace
 from datetime import date, datetime
+from importlib.util import find_spec
 import unittest
+from unittest.mock import patch
 
 from planaware.journeys import (
     BoardingAllowance, JourneyDraft, JourneyError, JourneyStore, TrainDeparture, Walk, _draft_values,
@@ -17,6 +19,28 @@ TIMED = replace(DRAFT, walk=Walk(300, "Test walk", "Alighting curb", "Platform")
 
 
 class JourneyDraftTests(unittest.TestCase):
+    @unittest.skipUnless(find_spec("psycopg"), "psycopg optional dependency unavailable")
+    def test_connection_log_keeps_only_driver_class_and_known_sqlstate(self):
+        from psycopg.errors import ConnectionFailure
+
+        secret = "postgresql://user:secret@example.test/db token=SECRET raw={payload}"
+        store = JourneyStore("host=localhost dbname=planaware_pilot password=SECRET")
+        for sqlstate, message in (
+            ("08006", "pilot_db.connect_failed error_type=ConnectionFailure sqlstate=08006"),
+            ("ABCDE", "pilot_db.connect_failed error_type=ConnectionFailure"),
+        ):
+            error = ConnectionFailure(secret)
+            error.sqlstate = sqlstate
+            with self.subTest(sqlstate=sqlstate), patch("psycopg.connect", side_effect=error):
+                with self.assertLogs("planaware.journeys", level="WARNING") as logs:
+                    with self.assertRaisesRegex(JourneyError, "^Cannot connect to the pilot database$"):
+                        store.get_journey(1)
+                record, = logs.records
+                self.assertEqual(record.getMessage(), message)
+                self.assertEqual(record.levelname, "WARNING")
+                self.assertIsNone(record.exc_info)
+                self.assertIsNone(record.stack_info)
+
     def test_valid_catalog_draft_preserves_unknowns(self):
         name, legs, allowance = _draft_values(DRAFT)
         self.assertEqual(name, DRAFT.name)

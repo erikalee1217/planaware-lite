@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
 
-from .assessment import STATUS_MAP, AssessmentError, _time, psql_json_executor
-from .n1 import ValidationError, _read_json
+from .assessment import STATUS_MAP, AssessmentError, psql_json_executor, to_utc_datetime
+from .n1 import ValidationError, parse_strict_json
 
 EXPLANATIONS = {
     'within_buffer': 'Conditionally feasible based on saved evidence and assumptions (boarding is not guaranteed).',
@@ -93,7 +93,7 @@ def build_brief(row):
         zone_name = request['service_timezone']
         zone = ZoneInfo(zone_name)
         def local(value):
-            return None if value is None else _time(value).astimezone(zone).isoformat(sep=' ')
+            return None if value is None else to_utc_datetime(value).astimezone(zone).isoformat(sep=' ')
         legs = {leg['leg_id']: leg for leg in context['legs']}
         origin, target = legs[transfer['from_leg_id']], legs[transfer['to_leg_id']]
         # Only explicit saved provenance is described. Absence of a synthetic
@@ -178,7 +178,7 @@ def load_assessment(identity, execute_sql):
     if type(identity) is not int or identity <= 0:
         raise BriefError('Assessment ID must be a positive integer')
     # The only DB operation in this module is this single SELECT.
-    row = _read_json(execute_sql(f'SELECT row_to_json(a) FROM impact_assessments a WHERE assessment_id={identity};'))
+    row = parse_strict_json(execute_sql(f'SELECT row_to_json(a) FROM impact_assessments a WHERE assessment_id={identity};'))
     if row is None:
         raise BriefError('Assessment not found')
     return row
@@ -195,7 +195,7 @@ def main(argv=None):
     if args.assessment_id is not None and not args.database:
         parser.error('--database is required with --assessment-id')
     try:
-        data = load_assessment(args.assessment_id, psql_json_executor(args.database)) if args.assessment_id is not None else _read_json(args.input.read_text())
+        data = load_assessment(args.assessment_id, psql_json_executor(args.database)) if args.assessment_id is not None else parse_strict_json(args.input.read_text())
         rows = data if isinstance(data, list) else [data]
         # Build all output first: invalid later rows do not yield a partial brief.
         if args.format == 'json':

@@ -20,7 +20,7 @@ from planaware.brief import build_brief, format_brief
 from planaware.journeys import JourneyError, JourneyStore, load_synthetic_212_snapshot, observation_assessment_spec
 from planaware.live import PipelineError
 from planaware.live_observations import acquire_live_boarding, list_live_artifacts, replay_live_boarding
-from planaware.n1 import FrozenSnapshot, _read_json, freeze_n1_fixture
+from planaware.n1 import FrozenSnapshot, freeze_n1_fixture, parse_strict_json
 from planaware.ui_helpers import TAIPEI, store_error_message
 from test_assessment import synthetic_spec
 from test_journeys import DRAFT, TIMED
@@ -442,7 +442,7 @@ class JourneyPostgresTests(unittest.TestCase):
             payload, = connection.execute(
                 "SELECT snapshot_payload::text FROM ingestion_runs WHERE run_id = %s", (run,),
             ).fetchone()
-            self.assertEqual(_read_json(payload), _read_json(snapshot.records_json))
+            self.assertEqual(parse_strict_json(payload), parse_strict_json(snapshot.records_json))
 
     def test_completed_empty_run_has_no_observations(self):
         snapshot = replace(load_synthetic_212_snapshot(), records_json="[]", run_key="synthetic-212-empty-test")
@@ -471,7 +471,7 @@ class JourneyPostgresTests(unittest.TestCase):
         for clock in ("source_updated_at", "fetched_at", "ingested_at"):
             self.assertEqual(datetime.fromisoformat(context_observation[clock]),
                              datetime.fromisoformat(observation[clock]))
-        frozen, = _read_json(snapshot.records_json)
+        frozen, = parse_strict_json(snapshot.records_json)
         self.assertEqual(datetime.fromisoformat(observation["source_updated_at"]),
                          datetime.fromisoformat(frozen["source_updated_at"]))
         self.assertEqual(datetime.fromisoformat(observation["fetched_at"]),

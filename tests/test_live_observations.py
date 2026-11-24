@@ -13,14 +13,14 @@ from planaware.live import PipelineError
 from planaware.live_observations import (
     LIVE_RECORD_LIMIT, acquire_live_boarding, list_live_artifacts, replay_live_boarding,
 )
-from planaware.n1 import FrozenSnapshot, _read_json
+from planaware.n1 import FrozenSnapshot, parse_strict_json
 from planaware.ui_helpers import live_evaluation_time, live_observation_prerequisites, observation_summary
 from test_journey_ui import ROUTE, demo_observation, historical_journey
 from test_live import CREDENTIALS, TOKEN, http_mock
 
 
 def live_payload(**changes):
-    row, = _read_json(load_synthetic_212_snapshot().records_json)
+    row, = parse_strict_json(load_synthetic_212_snapshot().records_json)
     raw = dict(row["raw_payload"], **changes)
     del raw["synthetic_test_only"]
     return raw
@@ -66,7 +66,7 @@ class LivePilotTests(unittest.TestCase):
                     for name in list_live_artifacts(self.directory)
                 ]
                 snapshot, = [saved for saved in snapshots if saved.fetched_at == fetched_at]
-                self.assertEqual([row["raw_payload"] for row in _read_json(snapshot.records_json)], raw)
+                self.assertEqual([row["raw_payload"] for row in parse_strict_json(snapshot.records_json)], raw)
         self.assertEqual(len(list_live_artifacts(self.directory)), 2)
 
     def test_over_limit_and_transport_failure_do_not_retry_or_expose_secrets(self):

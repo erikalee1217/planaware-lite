@@ -5,12 +5,20 @@ from datetime import date, datetime
 from hashlib import sha256
 from importlib.resources import files
 import json
+import logging
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from .assessment import AssessmentError, AssessmentSpec, _time, _validate_spec, build_assessment, canonical_json
+from .assessment import (
+    AssessmentError, AssessmentSpec, build_assessment, canonical_json,
+    to_utc_datetime, validate_assessment_spec,
+)
 from .catalog import CatalogError, load_catalog
-from .n1 import FrozenSnapshot, _read_json
+from .diagnostics import log_failure
+from .n1 import FrozenSnapshot, parse_strict_json
+
+
+logger = logging.getLogger(__name__)
 
 
 class JourneyError(ValueError):
@@ -207,7 +215,8 @@ def _matches_draft(current, name, service_date, legs, allowance):
     return saved_allowance == allowance
 
 
-def _validate_snapshot_scope(snapshot: FrozenSnapshot):
+def validate_pilot_snapshot_scope(snapshot: FrozenSnapshot):
+    """Require a frozen N1 snapshot scoped to the pilot boarding corridor."""
     if not isinstance(snapshot, FrozenSnapshot):
         raise JourneyError("Expected a validated frozen N1 snapshot")
     scope = snapshot.scope
@@ -223,7 +232,7 @@ def load_synthetic_212_snapshot() -> FrozenSnapshot:
     """Load the bundled historical-clock test fixture. No TDX requests are made."""
     resource = files("planaware").joinpath("catalogs", "synthetic-212-n1-v1.json")
     snapshot = FrozenSnapshot.from_json(resource.read_text(encoding="utf-8"))
-    _validate_snapshot_scope(snapshot)
+    validate_pilot_snapshot_scope(snapshot)
     return snapshot
 
 
@@ -251,7 +260,7 @@ def observation_assessment_spec(
         (reference_version, assumption_version) !=
         (train_ref.get("reference_data_version"), train_ref.get("assumption_version"))):
         raise JourneyError("Save matching timing reference and assumption versions before assessing")
-    evaluation = _time(observation.get("fetched_at") if evaluated_at is None else evaluated_at)
+    evaluation = to_utc_datetime(observation.get("fetched_at") if evaluated_at is None else evaluated_at)
     if evaluation is None:
         raise JourneyError("Historical evaluation requires the observation fetch timestamp")
     return AssessmentSpec(
@@ -285,7 +294,8 @@ class JourneyStore:
             import psycopg
             from psycopg.conninfo import conninfo_to_dict
             from psycopg.rows import dict_row
-        except ImportError:
+        except ImportError as error:
+            log_failure(logger, logging.DEBUG, "pilot_db.dependency_missing", error)
             raise JourneyError("Install the journey optional dependency to use PostgreSQL") from None
         try:
             parameters = conninfo_to_dict(self._dsn)
@@ -296,7 +306,8 @@ class JourneyStore:
             if not parameters.get("host"):
                 raise JourneyError("Configure an explicit pilot database host or socket directory")
             return psycopg.connect(self._dsn, row_factory=dict_row, autocommit=True, connect_timeout=5)
-        except psycopg.Error:
+        except psycopg.Error as error:
+            log_failure(logger, logging.WARNING, "pilot_db.connect_failed", error)
             raise JourneyError("Cannot connect to the pilot database") from None
 
     @staticmethod
@@ -360,7 +371,8 @@ class JourneyStore:
                 with connection.transaction():
                     connection.execute("SET LOCAL TIME ZONE 'UTC'")
                     return self._insert_draft(connection, name, draft.service_date, legs, allowance)
-            except Error:
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.create_draft_failed", error)
                 raise JourneyError("Could not create the journey draft") from None
 
     def get_journey(self, journey_id: int) -> Journey:
@@ -372,7 +384,8 @@ class JourneyStore:
                 with connection.transaction():
                     connection.execute("SET LOCAL TIME ZONE 'UTC'")
                     return self._read(connection, journey_id)
-            except Error:
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.get_journey_failed", error)
                 raise JourneyError("Could not read the pilot journey") from None
 
     def execute_snapshot_sql(self, statement: str) -> str:
@@ -385,12 +398,13 @@ class JourneyStore:
                     connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
                     row = connection.execute(statement).fetchone()
                     return str(next(iter(row.values())))
-            except Error:
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.execute_snapshot_sql_failed", error)
                 raise JourneyError("Could not persist the frozen snapshot") from None
 
     def import_snapshot(self, snapshot: FrozenSnapshot) -> int:
         """Commit a validated pilot snapshot and return its existing or new run ID."""
-        _validate_snapshot_scope(snapshot)
+        validate_pilot_snapshot_scope(snapshot)
         with self._connect() as connection:
             from psycopg import Error
 
@@ -406,7 +420,9 @@ class JourneyStore:
                     return row["run_id"]
             except Error as error:
                 if error.sqlstate == "23514" and error.diag.constraint_name == "ingestion_snapshot_conflict":
+                    log_failure(logger, logging.DEBUG, "pilot_db.import_snapshot_conflict", error)
                     raise JourneyError("Run key already belongs to a different frozen snapshot") from None
+                log_failure(logger, logging.WARNING, "pilot_db.import_snapshot_failed", error)
                 raise JourneyError("Could not import the frozen snapshot; retry the identical artifact "
                                    "if the commit outcome is unknown") from None
 
@@ -425,8 +441,9 @@ class JourneyStore:
                     WHERE o.run_id = %s AND o.route_uid = %s AND o.direction = %s AND o.stop_uid = %s
                     ORDER BY o.record_index
                 """, (run_id, route_uid, direction, stop_uid)).fetchall()
-                return [_read_json(row["observation"]) for row in rows]
-            except Error:
+                return [parse_strict_json(row["observation"]) for row in rows]
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.list_run_observations_failed", error)
                 raise JourneyError("Could not read observations for the saved run") from None
 
     def list_journeys(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -444,7 +461,8 @@ class JourneyStore:
                     ORDER BY j.created_at DESC, j.journey_id DESC
                     LIMIT %s
                 """, (limit,)).fetchall()
-            except Error:
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.list_journeys_failed", error)
                 raise JourneyError("Could not load saved journeys") from None
 
     def list_assessments(self, journey_id: int) -> list[dict[str, Any]]:
@@ -460,8 +478,9 @@ class JourneyStore:
                     WHERE a.journey_id = %s
                     ORDER BY a.evaluated_at DESC, a.assessment_id DESC
                 """, (journey_id,)).fetchall()
-                return [_read_json(row["assessment"]) for row in rows]
-            except Error:
+                return [parse_strict_json(row["assessment"]) for row in rows]
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.list_assessments_failed", error)
                 raise JourneyError("Could not read saved assessments") from None
 
     @staticmethod
@@ -474,7 +493,7 @@ class JourneyStore:
 
     def assess_journey(self, spec: AssessmentSpec) -> dict[str, int | str]:
         """Assess and persist the same locked version of a pilot journey."""
-        _validate_spec(spec)
+        validate_assessment_spec(spec)
         with self._connect() as connection:
             from psycopg import Error
 
@@ -498,7 +517,7 @@ class JourneyStore:
                     """, (spec.journey_id, spec.journey_id, spec.transfer_id,
                           spec.journey_id, list(spec.observation_ids)))
                     # Decode with the same decimal-preserving reader as the CLI.
-                    context = _read_json(cursor.fetchone()["context"])
+                    context = parse_strict_json(cursor.fetchone()["context"])
                     record = build_assessment(spec, context)
                     cursor.execute("SELECT public.persist_impact_assessment(%s::jsonb) AS assessment_id",
                                    (canonical_json(record),))
@@ -510,7 +529,9 @@ class JourneyStore:
                     }
             except Error as error:
                 if error.sqlstate == "23514" and error.diag.constraint_name == "impact_assessment_conflict":
+                    log_failure(logger, logging.DEBUG, "pilot_db.assess_journey_conflict", error)
                     raise AssessmentError("Assessment key already belongs to a different record") from None
+                log_failure(logger, logging.WARNING, "pilot_db.assess_journey_failed", error)
                 raise AssessmentError("Could not assess the pilot journey; retry with identical inputs "
                                       "if the commit outcome is unknown") from None
 
@@ -549,7 +570,8 @@ class JourneyStore:
                         return JourneySave(cloned, "cloned", source_journey_id=journey_id)
                     self._update_draft(connection, current, name, service_date, legs, allowance)
                     return JourneySave(self._read(connection, journey_id), "updated")
-            except Error:
+            except Error as error:
+                log_failure(logger, logging.WARNING, "pilot_db.save_journey_failed", error)
                 raise JourneyError("Could not save the journey draft") from None
 
     def _update_draft(self, connection, current, name, service_date, legs, allowance):

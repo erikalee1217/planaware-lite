@@ -11,6 +11,7 @@ import time
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+# Direct execution uses the checkout even when only analytics dependencies are installed.
 sys.path.insert(0, str(ROOT))
 from planaware.n1 import N1Scope, freeze_n1_fixture
 from planaware.assessment import demonstrate
@@ -181,10 +182,7 @@ def main(argv=None):
             'dbt_core_version': result['metadata']['dbt_version'], 'results':
                 [{'unique_id': row['unique_id'], 'status': row['status']} for row in result['results']],
             'observation_rows': expected_observations, 'assessment_rows': 4, 'quality_categories': quality,
-            'negative_timing_test_failed_as_expected': None if args.demo else True,
-            'operational_rows_unchanged_by_build': True, 'brief_rendering_unchanged_rows': True,
             'snapshot_replay': saved_run, 'assessment_results': results,
-            'identical_assessment_retry_preserved_rows': True,
             'fixtures': 'historical N1 sample + synthetic timings and quality cases' if args.demo else 'synthetic only',
             'freshness_policy': '120 seconds illustrative, not a TDX guarantee', 'tdx_requests': 0}
     finally:
@@ -194,7 +192,6 @@ def main(argv=None):
                 raise RuntimeError('Refusing cleanup without matching ownership label')
             if command([docker, 'rm', '--force', container]).returncode:
                 raise RuntimeError('Owned analytics container cleanup failed')
-    report['owned_database_cleaned_up'] = True
     (run_directory / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
     print('Saved local results:', run_directory.relative_to(ROOT))

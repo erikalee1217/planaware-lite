@@ -4,7 +4,7 @@ from datetime import date, datetime, time
 from decimal import Decimal, DecimalException, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
-from .assessment import AssessmentSpec, _time, inspect_boarding_observation
+from .assessment import AssessmentSpec, inspect_boarding_observation, to_utc_datetime
 from .brief import ISSUES, BriefError, build_brief
 from .catalog import RouteVariant
 from .journeys import BoardingAllowance, Journey, JourneyDraft, JourneyError, TrainDeparture, Walk
@@ -200,10 +200,10 @@ def assessment_history(rows):
 
 def observation_summary(observation, route: RouteVariant, *, evaluated_at=None) -> dict[str, str]:
     """Display boarding evidence quality without constructing arrival bounds."""
-    fetched = _time(observation["fetched_at"])
-    source = _time(observation["source_updated_at"])
-    evaluation = fetched if evaluated_at is None else _time(evaluated_at)
-    updated = _time(observation["raw_payload"].get("UpdateTime"))
+    fetched = to_utc_datetime(observation["fetched_at"])
+    source = to_utc_datetime(observation["source_updated_at"])
+    evaluation = fetched if evaluated_at is None else to_utc_datetime(evaluated_at)
+    updated = to_utc_datetime(observation["raw_payload"].get("UpdateTime"))
     quality, issues = inspect_boarding_observation(
         observation, route_uid=route.route_uid, direction=route.direction,
         boarding_stop_uid=route.stops[0].stop_uid, evaluated_at=evaluation,
@@ -234,7 +234,7 @@ def observation_summary(observation, route: RouteVariant, *, evaluated_at=None) 
 def live_evaluation_time(fetched_at, local_timestamp=""):
     """Use the saved acquisition time unless an explicit Taipei time was entered."""
     if not local_timestamp.strip():
-        return _time(fetched_at)
+        return to_utc_datetime(fetched_at)
     try:
         day, value = local_timestamp.strip().split(maxsplit=1)
         return _taipei_datetime(date.fromisoformat(day), value, "the evaluation time")
@@ -243,7 +243,7 @@ def live_evaluation_time(fetched_at, local_timestamp=""):
 
 
 def live_observation_prerequisites(journey, fetched_at, evaluated_at):
-    day = _time(fetched_at).astimezone(TAIPEI).date()
+    day = to_utc_datetime(fetched_at).astimezone(TAIPEI).date()
     if journey is None:
         return (f"Load a saved journey dated {day} to assess this observation.",)
     if journey.service_date != day:
@@ -265,7 +265,7 @@ def live_observation_prerequisites(journey, fetched_at, evaluated_at):
 
 
 def offline_observation_prerequisites(journey: Journey | None, fetched_at: str) -> tuple[str, ...]:
-    fixture_date = _time(fetched_at).astimezone(TAIPEI).date()
+    fixture_date = to_utc_datetime(fetched_at).astimezone(TAIPEI).date()
     if journey is None:
         return (f"Load a saved journey dated {fixture_date} to use this historical snapshot.",)
     if journey.service_date != fixture_date:

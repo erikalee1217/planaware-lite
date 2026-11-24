@@ -11,7 +11,7 @@ from planaware.journeys import (
     Journey, JourneyError, JourneySave, _draft_values,
     load_synthetic_212_snapshot, observation_assessment_spec,
 )
-from planaware.n1 import _read_json
+from planaware.n1 import parse_strict_json
 from planaware.ui_helpers import (
     ARRIVAL_SOURCE, ASSUMPTION_SOURCE, WALK_END, WALK_START,
     assessment_history, assessment_prerequisites, assessment_spec_from_form, draft_from_form,
@@ -43,7 +43,7 @@ def saved_journey(draft=DRAFT, *, journey_id=1, token="original-token", assessed
 
 def demo_observation():
     snapshot = load_synthetic_212_snapshot()
-    row, = _read_json(snapshot.records_json)
+    row, = parse_strict_json(snapshot.records_json)
     return dict(row, run_id=12, observation_id=42, source_system="tdx_bus_n1",
                 fetched_at=snapshot.fetched_at)
 
@@ -218,6 +218,32 @@ class JourneyStreamlitTests(unittest.TestCase):
         self.constructor.assert_not_called()
         self.assertIn("PLANAWARE_PILOT_DSN", self.app.warning[0].value)
 
+    def test_offline_import_log_keeps_only_safe_fields_and_skips_driver_duplicates(self):
+        error = JourneyError("postgresql://user:secret@example.test/db token=SECRET raw={payload}")
+        error.sqlstate = "23514"
+        self.store.import_snapshot.side_effect = error
+        self.app.run()
+        with self.assertLogs("__main__", level="DEBUG") as logs:
+            self.click("Import demo N1 snapshot")
+        record, = logs.records
+        expected = "pilot_ui.offline_import_failed error_type=JourneyError"
+        if find_spec("psycopg"):
+            expected += " sqlstate=23514"
+        self.assertEqual(record.getMessage(), expected)
+        self.assertEqual(record.levelname, "DEBUG")
+        self.assertIsNone(record.exc_info)
+        self.assertIsNone(record.stack_info)
+        self.assertIn("Could not load the synthetic boarding observation.", self.app.error[0].value)
+
+        if find_spec("psycopg"):
+            from psycopg.errors import ConnectionFailure
+
+            # A translated database error reaches the UI after the store logs it.
+            error.__context__ = ConnectionFailure("SECRET")
+            with self.assertNoLogs("__main__", level="DEBUG"):
+                self.click("Import demo N1 snapshot")
+            self.assertIn("Could not load the synthetic boarding observation.", self.app.error[0].value)
+
     def test_render_and_load_do_not_write_create_requires_submit(self):
         self.app.run()
         self.app.run()
@@ -333,7 +359,7 @@ class JourneyStreamlitTests(unittest.TestCase):
                                     service_date=journey.service_date.isoformat()),
                        transfer=dict(journey.transfer, journey_id=journey.journey_id),
                        legs=journey.legs, observations=[observation])
-        row = _read_json(canonical_json(dict(build_assessment(spec, context), assessment_id=73)))
+        row = parse_strict_json(canonical_json(dict(build_assessment(spec, context), assessment_id=73)))
         self.store.assess_journey.return_value = {"assessment_id": 73}
         self.store.list_assessments.return_value = [row]
         self.store.get_journey.return_value = replace(journey, has_assessments=True)

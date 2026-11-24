@@ -45,7 +45,7 @@ class N1Scope:
             not isinstance(stop, str) or not stop.strip() for stop in self.stop_uids
         ) or len(set(self.stop_uids)) != len(self.stop_uids):
             raise ValidationError('Configured StopUIDs must be a nonempty unique tuple')
-        _read_json(_json_text(self.as_dict()))
+        parse_strict_json(dump_stable_json(self.as_dict()))
 
     def as_dict(self):
         return {'route_uid': self.route_uid, 'direction': self.direction,
@@ -59,16 +59,16 @@ class N1Scope:
 
     @classmethod
     def from_json(cls, text):
-        return cls.from_dict(_read_json(text))
+        return cls.from_dict(parse_strict_json(text))
 
 
-def _json_text(value):
+def dump_stable_json(value):
     """Stable JSON with Decimal numbers kept numeric, never rounded via float."""
     if isinstance(value, dict):
-        return '{' + ','.join(json.dumps(k, ensure_ascii=False) + ':' + _json_text(value[k])
+        return '{' + ','.join(json.dumps(k, ensure_ascii=False) + ':' + dump_stable_json(value[k])
                               for k in sorted(value)) + '}'
     if isinstance(value, list):
-        return '[' + ','.join(_json_text(item) for item in value) + ']'
+        return '[' + ','.join(dump_stable_json(item) for item in value) + ']'
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValidationError('JSON numbers must be finite')
@@ -76,7 +76,8 @@ def _json_text(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
-def _read_json(text):
+def parse_strict_json(text):
+    """Parse JSON with exact decimals, rejecting duplicate keys and unsupported text."""
     def object_pairs(pairs):
         result = {}
         for key, value in pairs:
@@ -111,7 +112,8 @@ def _read_json(text):
         raise ValidationError('Malformed JSON or unsupported Unicode/nesting') from error
 
 
-def _timestamp(value, field):
+def parse_offset_timestamp(value, field):
+    """Parse a strict ISO timestamp string and retain its supplied UTC offset."""
     # No local-time guessing, whitespace repair or discarded fractional digits.
     if not isinstance(value, str) or not re.fullmatch(
         r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})', value
@@ -129,9 +131,9 @@ def _timestamp(value, field):
 def _metadata(run_key, requested_at, fetched_at):
     if not isinstance(run_key, str) or not run_key.strip() or '\x00' in run_key:
         raise ValidationError('A nonblank run key is required')
-    _read_json(_json_text(run_key))
-    requested = _timestamp(requested_at, 'requested_at')
-    fetched = _timestamp(fetched_at, 'fetched_at')
+    parse_strict_json(dump_stable_json(run_key))
+    requested = parse_offset_timestamp(requested_at, 'requested_at')
+    fetched = parse_offset_timestamp(fetched_at, 'fetched_at')
     if fetched < requested:
         raise ValidationError('fetched_at cannot precede requested_at')
 
@@ -203,7 +205,7 @@ def _normalize(records, scope):
         for source_field, normalized_field in TIMESTAMPS.items():
             value = raw.get(source_field)
             if value is not None:
-                _timestamp(value, prefix + '.' + source_field)
+                parse_offset_timestamp(value, prefix + '.' + source_field)
             # Keep the original offset/text, never substitute a different clock.
             row[normalized_field] = value
         if row['source_updated_at'] is None:
@@ -224,32 +226,32 @@ class FrozenSnapshot:
 
     def __post_init__(self):
         _metadata(self.run_key, self.requested_at, self.fetched_at)
-        records = _read_json(self.records_json)
+        records = parse_strict_json(self.records_json)
         if not isinstance(records, list) or any(
             not isinstance(row, dict) or 'raw_payload' not in row for row in records
         ):
             raise ValidationError('Frozen records must contain original raw_payload objects')
         if not isinstance(self.scope, N1Scope):
             raise ValidationError('Frozen snapshot requires a validated scope')
-        if _json_text(records) != _json_text(_normalize([row['raw_payload'] for row in records], self.scope)):
+        if dump_stable_json(records) != dump_stable_json(_normalize([row['raw_payload'] for row in records], self.scope)):
             raise ValidationError('Frozen normalized fields do not match their raw evidence/version')
 
     def to_json(self):
-        return _json_text({
+        return dump_stable_json({
             'format_version': FORMAT_VERSION, 'run_key': self.run_key,
             'requested_at': self.requested_at, 'fetched_at': self.fetched_at,
-            'records': _read_json(self.records_json),
+            'records': parse_strict_json(self.records_json),
             'scope': self.scope.as_dict(),
         })
 
     @classmethod
     def from_json(cls, text):
-        artifact = _read_json(text)
+        artifact = parse_strict_json(text)
         keys = {'format_version', 'run_key', 'requested_at', 'fetched_at', 'records', 'scope'}
         if not isinstance(artifact, dict) or set(artifact) != keys or artifact['format_version'] != FORMAT_VERSION:
             raise ValidationError('Unsupported frozen snapshot format or fields')
         return cls(artifact['run_key'], artifact['requested_at'], artifact['fetched_at'],
-                   _json_text(artifact['records']), N1Scope.from_dict(artifact['scope']))
+                   dump_stable_json(artifact['records']), N1Scope.from_dict(artifact['scope']))
 
     def to_sql(self):
         # Explicit E-string escaping is independent of standard_conforming_strings.
@@ -269,7 +271,7 @@ def freeze_n1_fixture(response_text, *, scope, requested_at, fetched_at, run_key
     if not isinstance(scope, N1Scope):
         raise ValidationError('A validated N1Scope is required')
     return FrozenSnapshot(run_key, requested_at, fetched_at,
-                          _json_text(_normalize(_read_json(response_text), scope)), scope)
+                          dump_stable_json(_normalize(parse_strict_json(response_text), scope)), scope)
 
 
 def persist_snapshot(snapshot: FrozenSnapshot, execute_sql: Callable[[str], str]) -> int:

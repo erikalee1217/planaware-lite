@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
-from .n1 import FrozenSnapshot, _read_json, freeze_n1_fixture, persist_snapshot
+from .n1 import FrozenSnapshot, freeze_n1_fixture, parse_strict_json, persist_snapshot
 
 TOKEN_URL = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token'
 N1_BASE = 'https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/'
@@ -125,7 +125,7 @@ def _persist(saved, execute_sql, *, authentication_requests, data_requests):
     except Exception:
         # Database diagnostics may echo SQL/raw evidence; never print them.
         raise PipelineError('Database persistence failed; artifact retained for replay; outcome may be unknown') from None
-    return {'run_key': saved.run_key, 'record_count': len(_read_json(saved.records_json)),
+    return {'run_key': saved.run_key, 'record_count': len(parse_strict_json(saved.records_json)),
             'database_run_id': run_id, 'authentication_requests': authentication_requests,
             'data_requests': data_requests}
 
@@ -151,7 +151,7 @@ def fetch_once(*, scope, city, max_records, output, execute_sql, confirm_free_qu
         headers={'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'})
     auth = _request(token_request, opener=opener, timeout=timeout, limit=16384, phase='authentication')
     try:
-        token_data = _read_json(auth)
+        token_data = parse_strict_json(auth)
         token = token_data['access_token']
         if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9._~+/=-]+', token) or token_data.get('token_type', '').lower() != 'bearer':
             raise ValueError()
@@ -165,7 +165,7 @@ def fetch_once(*, scope, city, max_records, output, execute_sql, confirm_free_qu
     try:
         saved = freeze_n1_fixture(response, scope=scope, run_key=run_key,
                                    requested_at=requested_at, fetched_at=fetched_at)
-        if len(_read_json(saved.records_json)) > max_records:
+        if len(parse_strict_json(saved.records_json)) > max_records:
             raise ValueError()
     except (ValueError, TypeError, RecursionError):
         raise PipelineError('Invalid or over-limit N1 response; nothing persisted') from None

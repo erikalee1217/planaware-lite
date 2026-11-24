@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import streamlit as st
 
 from planaware.assessment import AssessmentError
 from planaware.catalog import load_catalog
+from planaware.diagnostics import log_failure
 from planaware.journeys import (
     JourneyError, JourneyStore, load_synthetic_212_snapshot, observation_assessment_spec,
 )
@@ -28,7 +30,30 @@ from planaware.ui_helpers import (
 )
 
 
+logger = logging.getLogger(__name__)
+_APP_FAILURE_TYPES = (AssessmentError, JourneyError, PipelineError, RiskInputError, ValidationError)
 LIVE_ARTIFACT_DIRECTORY = Path(__file__).resolve().parent / "work" / "live-snapshots"
+
+
+def _log_action_failure(event, error):
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    # The store already logs driver errors before translating them for the UI.
+    context = error.__cause__ or error.__context__
+    if context is not None:
+        try:
+            from psycopg import Error
+        except ImportError:
+            pass
+        else:
+            seen = set()
+            while context is not None and id(context) not in seen:
+                if isinstance(context, Error):
+                    return
+                seen.add(id(context))
+                context = context.__cause__ or context.__context__
+    log_failure(logger, logging.DEBUG, event, error, expected_types=_APP_FAILURE_TYPES)
 
 
 def show_summary(journey, route, values):
@@ -57,7 +82,9 @@ def refresh_after_assessment(store, journey, state, assessment_id):
     # The assessment committed. Preserve that fact if the refresh fails.
     try:
         refreshed = store.get_journey(journey.journey_id)
-    except JourneyError:
+    except JourneyError as error:
+        log_failure(logger, logging.DEBUG, "pilot_ui.assessment_saved_refresh_failed", error,
+                    expected_types=_APP_FAILURE_TYPES)
         state.journey = replace(journey, has_assessments=True)
         state.assessment_refresh_warning = True
     else:
@@ -79,7 +106,8 @@ def show_offline_observation(store, journey, route, state):
             observations = store.list_run_observations(run_id, route.route_uid, route.direction, boarding.stop_uid)
             if len(observations) != 1 or observations[0]["raw_payload"].get("synthetic_test_only") is not True:
                 raise JourneyError("Expected one synthetic boarding observation")
-        except (JourneyError, ValidationError, OSError):
+        except (JourneyError, ValidationError, OSError) as error:
+            _log_action_failure("pilot_ui.offline_import_failed", error)
             st.error("Could not load the synthetic boarding observation. Check the pilot database and retry the import.")
         else:
             state.offline_observation = observations[0]
@@ -97,7 +125,8 @@ def show_offline_observation(store, journey, route, state):
         try:
             spec = observation_assessment_spec(journey, observation)
             result = store.assess_journey(spec)
-        except (AssessmentError, JourneyError, RiskInputError):
+        except (AssessmentError, JourneyError, RiskInputError) as error:
+            _log_action_failure("pilot_ui.offline_assessment_failed", error)
             st.error("Could not save the observation assessment. Reload the journey and check its saved timing inputs.")
         else:
             refresh_after_assessment(store, journey, state, result["assessment_id"])
@@ -125,13 +154,15 @@ def show_live_observation(store, journey, route, state):
                 try:
                     run_id, fetched_at = acquire_live_boarding(store, LIVE_ARTIFACT_DIRECTORY, confirmed=confirmed)
                 except PipelineError as error:
+                    _log_action_failure("pilot_ui.live_fetch_failed", error)
                     st.error(str(error))  # Pilot service emits fixed messages only.
                 else:
                     state.live_run = (run_id, fetched_at, "Newly acquired TDX observation")
 
         try:
             artifacts = list_live_artifacts(LIVE_ARTIFACT_DIRECTORY)
-        except PipelineError:
+        except PipelineError as error:
+            _log_action_failure("pilot_ui.snapshot_list_failed", error)
             st.error("Could not list saved snapshots.")
             artifacts = []
         if artifacts:
@@ -141,7 +172,8 @@ def show_live_observation(store, journey, route, state):
             if replay:
                 try:
                     run_id, fetched_at = replay_live_boarding(store, LIVE_ARTIFACT_DIRECTORY, artifact)
-                except (PipelineError, JourneyError):
+                except (PipelineError, JourneyError) as error:
+                    _log_action_failure("pilot_ui.snapshot_replay_failed", error)
                     st.error("Could not replay the saved snapshot. Check the pilot database and try replay again.")
                 else:
                     state.live_run = (run_id, fetched_at, "Real historical replay")
@@ -181,7 +213,8 @@ def show_live_observation(store, journey, route, state):
             try:
                 spec = observation_assessment_spec(journey, observation, evaluated_at=evaluated_at)
                 result = store.assess_journey(spec)
-            except (AssessmentError, JourneyError, RiskInputError):
+            except (AssessmentError, JourneyError, RiskInputError) as error:
+                _log_action_failure("pilot_ui.live_assessment_failed", error)
                 st.error("Could not save the observation assessment. Check the journey and evidence times.")
             else:
                 refresh_after_assessment(store, journey, state, result["assessment_id"])
@@ -214,7 +247,8 @@ def show_assessment(store, journey, state):
                 result = store.assess_journey(spec)
             except RiskInputError:
                 st.error("Check that earliest arrival is at or before latest arrival and that all times are valid.")
-            except (AssessmentError, JourneyError):
+            except (AssessmentError, JourneyError) as error:
+                _log_action_failure("pilot_ui.assumption_assessment_failed", error)
                 st.error("The assessment could not be saved. Reload the journey and check its inputs.")
             else:
                 refresh_after_assessment(store, journey, state, result["assessment_id"])
