@@ -55,6 +55,17 @@ def to_utc_datetime(value):
     return value.astimezone(timezone.utc)
 
 
+def evidence_clock_issue(source, fetched, evaluated, *, freshness_seconds=_DEFAULT_EVIDENCE_FRESHNESS_SECONDS):
+    """Classify normalized source, fetch and evaluation clocks for N1 evidence."""
+    if source is None:
+        return 'missing_source_time'
+    if source > evaluated or fetched > evaluated or source > fetched:
+        return 'future_or_inconsistent_clock'
+    if evaluated - source > timedelta(seconds=freshness_seconds):
+        return 'stale_source_time'
+    return None
+
+
 def _micros(value):
     return None if value is None else (value.days * 86400 + value.seconds) * 1000000 + value.microseconds
 
@@ -171,11 +182,10 @@ def _inspect_observations(observations, *, scope, evaluated_at, freshness_second
             issues.append('invalid_raw_source_time')
     source = to_utc_datetime(selected['source_updated_at'])
     fetched, evaluated = to_utc_datetime(selected['fetched_at']), to_utc_datetime(evaluated_at)
-    if source is None:
-        issues.append('missing_source_time')
-    else:
-        if source > evaluated or fetched > evaluated or source > fetched:
-            issues.append('future_or_inconsistent_clock')
+    clock_issue = evidence_clock_issue(source, fetched, evaluated, freshness_seconds=freshness_seconds)
+    if clock_issue and clock_issue != 'stale_source_time':
+        issues.append(clock_issue)
+    if source is not None:
         known = [to_utc_datetime(row['source_updated_at']) for row in observations if row['source_updated_at']]
         if known and source < max(known):
             issues.append('delayed_observation')
@@ -188,8 +198,8 @@ def _inspect_observations(observations, *, scope, evaluated_at, freshness_second
         issues.append('missing_or_invalid_estimate')
     if issues:
         return 'unusable', selected['observation_id'], sorted(set(issues))
-    if evaluated - source > timedelta(seconds=freshness_seconds):
-        return 'stale', selected['observation_id'], ['stale_source_time']
+    if clock_issue == 'stale_source_time':
+        return 'stale', selected['observation_id'], [clock_issue]
     return 'usable', selected['observation_id'], []
 
 

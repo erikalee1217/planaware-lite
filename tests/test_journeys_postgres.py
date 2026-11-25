@@ -20,6 +20,8 @@ from planaware.brief import build_brief, format_brief
 from planaware.journeys import JourneyError, JourneyStore, load_synthetic_212_snapshot, observation_assessment_spec
 from planaware.live import PipelineError
 from planaware.live_observations import acquire_live_boarding, list_live_artifacts, replay_live_boarding
+from planaware.monitor_state import Observation, SavedAssessment
+from planaware.monitor_store import MonitorConflict, MonitorError, MonitorStore
 from planaware.n1 import FrozenSnapshot, freeze_n1_fixture, parse_strict_json
 from planaware.ui_helpers import TAIPEI, store_error_message
 from test_assessment import synthetic_spec
@@ -108,10 +110,115 @@ class JourneyPostgresTests(unittest.TestCase):
             connection.execute("GRANT DELETE ON transfer_constraints TO journey_writer")
             connection.execute("GRANT INSERT ON ingestion_runs, source_observations TO journey_writer")
             connection.execute("GRANT UPDATE ON ingestion_runs TO journey_writer")
+            connection.execute("GRANT INSERT, UPDATE ON monitor_sessions TO journey_writer")
+            connection.execute("GRANT INSERT ON monitor_events TO journey_writer")
             connection.execute("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO journey_writer")
         cls.psycopg = psycopg
         cls.writer_dsn = make_conninfo(cls.dsn, user="journey_writer")
         cls.store = JourneyStore(cls.writer_dsn)
+
+    def monitor_fixture(self):
+        journey = self.store.create_draft(TIMED)
+        monitor = MonitorStore(self.writer_dsn)
+        at = datetime(2026, 11, 25, 4, tzinfo=timezone.utc)
+        session = monitor.create_session(uuid4().hex, journey.journey_id, "synthetic", at)
+        return journey, monitor, session, at
+
+    def test_monitor_replay_restart_equal_clock_and_two_stale_cycles(self):
+        _, monitor, session, at = self.monitor_fixture()
+        identity = session.state.session_id
+        observations = (
+            (1, "first", Observation("obs-1", "synthetic", "ok", at, at), at),
+            (2, "same-source", Observation("obs-2", "synthetic", "ok", at, at), at),
+            (3, "expire-1", None, at + timedelta(seconds=121)),
+            (4, "second", Observation("obs-3", "synthetic", "ok",
+                                      at + timedelta(seconds=130), at + timedelta(seconds=130)),
+             at + timedelta(seconds=130)),
+            (5, "expire-2", None, at + timedelta(seconds=251)),
+        )
+        for sequence, key, item, evaluated in observations:
+            session = monitor.apply_monitor_input(identity, item, evaluated,
+                                                  input_sequence=sequence, input_identity=key,
+                                                  expected_version=session.version)
+        restarted = MonitorStore(self.writer_dsn)
+        self.assertEqual(restarted.get_session(identity), session)
+        for sequence, key, item, evaluated in observations:
+            self.assertEqual(restarted.apply_monitor_input(
+                identity, item, evaluated, input_sequence=sequence, input_identity=key, expected_version=0), session)
+        with self.assertRaises(MonitorConflict):
+            restarted.apply_monitor_input(identity, None, observations[-1][3],
+                                          input_sequence=5, input_identity="different", expected_version=session.version)
+        events = restarted.list_session_events(identity)
+        self.assertEqual([event.kind for event in events], [
+            "evidence_became_stale", "evidence_recovered", "evidence_became_stale",
+        ])
+        self.assertEqual(len({event.event_id for event in events}), 3)
+        self.assertEqual(events[0].basis, at.isoformat())
+
+    def test_monitor_concurrent_update_and_terminal_stop(self):
+        _, monitor, session, at = self.monitor_fixture()
+        identity = session.state.session_id
+        ready = Barrier(2)
+
+        # Both writers intentionally use the same next sequence and different identities.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            def contender(key):
+                ready.wait(timeout=5)
+                try:
+                    return MonitorStore(self.writer_dsn).apply_monitor_input(
+                        identity, None, at, input_sequence=1, input_identity=key, expected_version=0)
+                except MonitorConflict:
+                    return None
+            results = list(pool.map(contender, ("tick-A", "tick-B")))
+        self.assertEqual(sum(row is not None for row in results), 1)
+        current = monitor.get_session(identity)
+        with self.assertRaises(MonitorConflict):
+            monitor.apply_monitor_input(identity, None, at, input_sequence=2,
+                                        input_identity="stale-version", expected_version=0)
+        stopped = monitor.stop_session(identity, at, input_sequence=2, input_identity="stop",
+                                       expected_version=current.version)
+        self.assertFalse(stopped.state.is_active)
+        self.assertEqual(stopped.stopped_at, at)
+        self.assertEqual(monitor.apply_monitor_input(
+            identity, Observation("failure", "synthetic", "failed"), at, input_sequence=3,
+            input_identity="ignored", expected_version=stopped.version), stopped)
+        self.assertEqual(monitor.list_session_events(identity), ())
+
+    def test_monitor_rolls_back_state_and_inserted_event(self):
+        _, monitor, initial, at = self.monitor_fixture()
+        identity = initial.state.session_id
+        write_events = monitor._write_events
+
+        def fail_after_insert(*args):
+            write_events(*args)
+            raise RuntimeError("forced rollback")
+
+        with patch.object(monitor, "_write_events", side_effect=fail_after_insert):
+            with self.assertRaisesRegex(RuntimeError, "forced rollback"):
+                monitor.apply_monitor_input(identity, Observation("failure", "synthetic", "failed"), at,
+                                            input_sequence=1, input_identity="failed-run", expected_version=0)
+        restarted = MonitorStore(self.writer_dsn)
+        self.assertEqual(restarted.get_session(identity), initial)
+        self.assertEqual(restarted.list_session_events(identity), ())
+        restarted.apply_monitor_input(identity, Observation("failure", "synthetic", "failed"), at,
+                                      input_sequence=1, input_identity="failed-run", expected_version=0)
+        self.assertEqual([event.kind for event in restarted.list_session_events(identity)], ["acquisition_failed"])
+
+    def test_monitor_validates_saved_assessment_journey_without_writing_history(self):
+        journey, monitor, initial, at = self.monitor_fixture()
+        other = self.store.create_draft(TIMED)
+        first = self.store.assess_journey(synthetic_spec(journey_id=journey.journey_id, transfer_id=journey.transfer["transfer_id"]))
+        foreign = self.store.assess_journey(synthetic_spec(journey_id=other.journey_id, transfer_id=other.transfer["transfer_id"]))
+        snapshot = self.store.list_assessments(journey.journey_id)
+        identity = initial.state.session_id
+        with self.assertRaises(MonitorError):
+            monitor.apply_monitor_input(identity, SavedAssessment(foreign["assessment_id"], foreign["status"]),
+                                        at, input_sequence=1, input_identity="foreign", expected_version=0)
+        self.assertEqual(monitor.get_session(identity), initial)
+        saved = monitor.apply_monitor_input(identity, SavedAssessment(first["assessment_id"], first["status"]),
+                                            at, input_sequence=1, input_identity="saved", expected_version=0)
+        self.assertEqual(saved.state.risk, first["status"])
+        self.assertEqual(self.store.list_assessments(journey.journey_id), snapshot)
 
     def test_round_trip_order_references_and_equivalent_token(self):
         saved = self.store.create_draft(TIMED)
