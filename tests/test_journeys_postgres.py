@@ -20,6 +20,8 @@ from planaware.brief import build_brief, format_brief
 from planaware.journeys import JourneyError, JourneyStore, load_synthetic_212_snapshot, observation_assessment_spec
 from planaware.live import PipelineError
 from planaware.live_observations import acquire_live_boarding, list_live_artifacts, replay_live_boarding
+from planaware.monitor_demo import MonitoringDemo
+from planaware.monitor_scheduler import AcquisitionUncertain, MonitorScheduler, timeline_provider
 from planaware.monitor_state import Observation, SavedAssessment
 from planaware.monitor_store import MonitorConflict, MonitorError, MonitorStore
 from planaware.n1 import FrozenSnapshot, freeze_n1_fixture, parse_strict_json
@@ -148,6 +150,9 @@ class JourneyPostgresTests(unittest.TestCase):
         with self.assertRaises(MonitorConflict):
             restarted.apply_monitor_input(identity, None, observations[-1][3],
                                           input_sequence=5, input_identity="different", expected_version=session.version)
+        self.assertEqual(restarted.apply_monitor_input(
+            identity, Observation("behind", "synthetic", "ok", at, at), observations[-1][3],
+            input_sequence=6, input_identity="older-source", expected_version=session.version), session)
         events = restarted.list_session_events(identity)
         self.assertEqual([event.kind for event in events], [
             "evidence_became_stale", "evidence_recovered", "evidence_became_stale",
@@ -219,6 +224,206 @@ class JourneyPostgresTests(unittest.TestCase):
                                             at, input_sequence=1, input_identity="saved", expected_version=0)
         self.assertEqual(saved.state.risk, first["status"])
         self.assertEqual(self.store.list_assessments(journey.journey_id), snapshot)
+
+    def scheduler_fixture(self, *, origin="synthetic", delay=0, budget=8, interval=20, deadline=600):
+        journey = self.store.create_draft(TIMED)
+        store = MonitorStore(self.writer_dsn)
+        at = datetime(2026, 11, 25, 4, tzinfo=timezone.utc)
+        identity = uuid4().hex
+        store.create_session(identity, journey.journey_id, origin, at)
+
+        def cleanup():
+            with self.psycopg.connect(self.dsn) as connection:
+                connection.execute("DELETE FROM monitor_events WHERE session_id = %s", (identity,))
+                connection.execute("DELETE FROM monitor_sessions WHERE session_id = %s", (identity,))
+
+        self.addCleanup(cleanup)
+        MonitorScheduler(store).schedule_session(identity, deadline=at + timedelta(seconds=deadline),
+                                                 next_due_at=at + timedelta(seconds=delay),
+                                                 min_interval=interval, max_acquisitions=budget)
+        return store, identity, at
+
+    def test_scheduler_due_catch_up_stale_and_deadline_without_acquisition(self):
+        store, identity, at = self.scheduler_fixture(origin="live", delay=60, deadline=200)
+        state = store.apply_monitor_input(identity, Observation("initial", "live", "ok", at, at), at,
+                                          input_sequence=1, input_identity="initial", expected_version=0)
+
+        def never(_):
+            self.fail("live session called the offline provider")
+
+        scheduler = MonitorScheduler(MonitorStore(self.writer_dsn), never)
+        self.assertIsNone(scheduler.run_once(at + timedelta(seconds=59)))
+        now = at + timedelta(seconds=190)
+        tick = scheduler.run_once(now)
+        self.assertEqual(tick.session.state.session_id, identity)
+        self.assertEqual(tick.session.version, state.version + 1)
+        self.assertEqual((tick.outcome, tick.acquisitions_reserved, tick.session.state.freshness),
+                         ("tick", 0, "stale"))
+        self.assertEqual(tick.next_due_at, now + timedelta(seconds=20))
+        self.assertIsNone(scheduler.run_once(now))
+        stop = scheduler.run_once(at + timedelta(seconds=205))
+        self.assertEqual(stop.stop_reason, "deadline")
+        self.assertEqual(stop.session.stopped_at, at + timedelta(seconds=200))
+        self.assertIsNone(stop.next_due_at)
+        self.assertEqual([event.kind for event in store.list_session_events(identity)], ["evidence_became_stale"])
+        self.assertIsNone(scheduler.run_once(at + timedelta(seconds=300)))
+
+    def test_scheduler_synthetic_reservations_duplicate_late_and_budget_stop(self):
+        store, identity, at = self.scheduler_fixture()
+        first = Observation("first", "synthetic", "ok", at, at)
+        stalled = Observation("stalled", "synthetic", "ok", at, at + timedelta(seconds=20))
+        newer = Observation("newer", "synthetic", "ok", at + timedelta(seconds=74),
+                            at + timedelta(seconds=78))
+        late = Observation("late", "synthetic", "ok", at + timedelta(seconds=70),
+                           at + timedelta(seconds=95))
+        tape = timeline_provider([first, stalled, None, first, newer, late,
+                                  Observation("known-failure", "synthetic", "failed")])
+        seen = []
+
+        def provider(attempt):
+            seen.append(attempt)
+            if attempt.number == 8:
+                raise AcquisitionUncertain()
+            return tape(attempt)
+
+        outcomes = []
+        for index in range(8):
+            scheduler = MonitorScheduler(MonitorStore(self.writer_dsn), provider)
+            result = scheduler.run_once(at + timedelta(seconds=index * 20))
+            self.assertEqual(result.acquisitions_reserved, index + 1)
+            self.assertEqual(result.session.last_input_sequence,
+                             seen[-1].input_sequence + int(index == 7))
+            outcomes.append(result.outcome)
+        self.assertEqual(outcomes, ["ok", "ok", "empty", "duplicate", "ok", "rejected", "failed", "uncertain"])
+        self.assertEqual(result.stop_reason, "budget_exhausted")
+        self.assertEqual(result.session.state.source_updated_at, newer.source_updated_at)
+        self.assertEqual(result.session.state.acquisition, "failed")
+        self.assertEqual([event.kind for event in store.list_session_events(identity)], ["acquisition_failed"])
+        self.assertIsNone(scheduler.run_once(at + timedelta(seconds=200)))
+
+    def test_scheduler_claim_rollback_and_post_commit_restart(self):
+        store, identity, at = self.scheduler_fixture(budget=1)
+        calls = []
+        restarted = MonitorScheduler(MonitorStore(self.writer_dsn))
+
+        def provider(attempt):
+            calls.append(attempt)
+            self.assertIsNone(restarted.run_once(at))
+            return timeline_provider([Observation("failed", "synthetic", "failed")])(attempt)
+
+        scheduler = MonitorScheduler(store, provider)
+        initial = store.get_session(identity)
+        process = scheduler._run_locked
+
+        def crash_before_commit(*args):
+            process(*args)
+            raise RuntimeError("simulated pre-commit crash")
+
+        with patch.object(scheduler, "_run_locked", side_effect=crash_before_commit):
+            with self.assertRaisesRegex(RuntimeError, "pre-commit crash"):
+                scheduler.run_once(at)
+        self.assertEqual(MonitorStore(self.writer_dsn).get_session(identity), initial)
+        self.assertEqual(store.list_session_events(identity), ())
+
+        def crash_after_commit():
+            MonitorScheduler(MonitorStore(self.writer_dsn), provider).run_once(at)
+            raise RuntimeError("simulated post-commit crash")
+
+        with self.assertRaisesRegex(RuntimeError, "post-commit crash"):
+            crash_after_commit()
+        self.assertEqual(calls, [calls[0], calls[0]])
+        self.assertEqual([event.kind for event in store.list_session_events(identity)], ["acquisition_failed"])
+        self.assertEqual(store.get_session(identity).state.lifecycle, "stopped")
+        with self.psycopg.connect(self.dsn) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT acquisitions_reserved, stop_reason FROM monitor_sessions WHERE session_id = %s",
+                (identity,),
+            ).fetchone(), (1, "budget_exhausted"))
+        self.assertIsNone(MonitorScheduler(MonitorStore(self.writer_dsn), provider).run_once(at))
+        self.assertEqual(len(calls), 2)
+
+    def test_monitor_demo_create_reload_no_writes_and_stop(self):
+        journey = self.store.create_draft(TIMED)
+        assessment = self.store.assess_journey(synthetic_spec(
+            journey_id=journey.journey_id, transfer_id=journey.transfer["transfer_id"],
+        ))
+        demo = MonitoringDemo(self.writer_dsn)
+        self.assertIsNone(demo.load(journey.journey_id))
+        created = demo.create(journey.journey_id)
+        reloaded_service = MonitoringDemo(self.writer_dsn)
+        self.assertEqual(created, reloaded_service.load(journey.journey_id))
+        self.assertEqual(reloaded_service.latest_assessment(journey.journey_id)["status"],
+                         assessment["status"])
+        self.assertEqual(reloaded_service.events(created), ())
+        self.assertEqual(reloaded_service.load(journey.journey_id).session.version, 0)
+        reloaded_service.stop(created)
+        stopped = demo.load(journey.journey_id)
+        self.assertFalse(stopped.can_step)
+        self.assertEqual(stopped.stop_reason, "user_stopped")
+        with self.assertRaises(MonitorError):
+            demo.step(stopped)
+        self.assertIsNone(demo.step(created))  # A stale page selection cannot step a stopped row.
+        self.assertEqual(demo.load(journey.journey_id), stopped)
+        self.assertEqual(demo.events(stopped), ())
+
+    def test_monitor_demo_steps_only_selected_session_and_reuses_database_clock(self):
+        journey = self.store.create_draft(TIMED)
+        demo = MonitoringDemo(self.writer_dsn)
+        loaded = demo.create(journey.journey_id)
+        self.addCleanup(lambda: demo.stop(demo.load(journey.journey_id)))
+        store = MonitorStore(self.writer_dsn)
+        other_id = f"earlier-{uuid4().hex}"
+        earlier = loaded.next_due_at - timedelta(minutes=1)
+        store.create_session(other_id, journey.journey_id, "synthetic", earlier)
+        MonitorScheduler(store).schedule_session(other_id, deadline=loaded.next_due_at + timedelta(minutes=5),
+                                                next_due_at=earlier, min_interval=60, max_acquisitions=2)
+        self.addCleanup(lambda: store.stop_session(other_id, earlier, input_sequence=1,
+                                                   input_identity="test-cleanup", expected_version=0))
+
+        for _ in range(4):
+            result = demo.step(loaded)
+            self.assertEqual(result.session.state.evaluated_at, loaded.next_due_at)
+            loaded = MonitoringDemo(self.writer_dsn).load(journey.journey_id)
+        self.assertEqual(store.get_session(other_id).version, 0)
+        self.assertEqual(loaded.session.state.freshness, "stale")
+        counts = demo.events(loaded)
+        self.assertEqual({event.kind for event in counts}, {"evidence_became_stale", "acquisition_failed"})
+        self.assertEqual(demo.load(journey.journey_id), loaded)
+        self.assertEqual(demo.events(loaded), counts)
+
+    def test_monitor_demo_restart_preserves_history_and_deduplicates_concurrent_create(self):
+        journey = self.store.create_draft(TIMED)
+        service = MonitoringDemo(self.writer_dsn)
+        first = service.create(journey.journey_id)
+        identity = first.session.state.session_id
+        for _ in range(6):
+            service.step(first)
+            first = service.load(journey.journey_id)
+        self.assertEqual((first.stop_reason, first.last_outcome, first.acquisitions_remaining),
+                         ("budget_exhausted", "empty", 0))
+        old_events = service.events(first)
+        ready = Barrier(2)
+
+        def restart(_):
+            ready.wait(timeout=5)
+            return MonitoringDemo(self.writer_dsn).create(journey.journey_id, after=identity)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one, two = pool.map(restart, range(2))
+        self.assertEqual(one, two)
+        self.assertEqual(len(service.sessions(journey.journey_id)), 2)
+        self.assertEqual(service.load(journey.journey_id), one)
+        self.assertEqual(service.load(journey.journey_id, identity), first)
+        self.assertEqual(service.stop(first), first.session)
+        for _ in range(4):
+            service.step(one)
+            one = service.load(journey.journey_id)
+        self.assertTrue({item.kind for item in old_events} >= {item.kind for item in service.events(one)})
+        self.assertTrue({item.event_id for item in old_events}.isdisjoint(
+            item.event_id for item in service.events(one)))
+        service.stop(one)
+        self.assertEqual(service.load(journey.journey_id).stop_reason, "user_stopped")
+        self.assertEqual(service.events(first), old_events)
 
     def test_round_trip_order_references_and_equivalent_token(self):
         saved = self.store.create_draft(TIMED)
